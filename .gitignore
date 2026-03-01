@@ -1,0 +1,30 @@
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# Recordings & reports
+recordings/
+
+# Playwright
+playwright/.local-browsers/
+
+# Coverage
+.coverage
+htmlcov/

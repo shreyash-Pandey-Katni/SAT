@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Execute Test{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Execute Test</h1>
+  <a class="btn btn-sm" href="/tests/{{ test_id }}">← Back</a>
+</div>
+
+<form id="exec-form" class="form">
+  <label>Browser
+    <select id="ex-browser">
+      <option value="chromium">Chromium</option>
+      <option value="firefox">Firefox</option>
+    </select>
+  </label>
+  <label>Strategies (comma-separated)
+    <input type="text" id="ex-strategies" value="selector,embedding,vlm"/>
+  </label>
+  <label><input type="checkbox" id="ex-autoheal" checked/> Auto-heal selectors</label>
+  <button type="submit" class="btn btn-primary" id="run-btn">Run</button>
+</form>
+
+<div id="progress" class="log hidden">
+  <h3>Progress</h3>
+  <ul id="step-list"></ul>
+</div>
+<div id="summary" class="hidden"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const testId = '{{ test_id }}';
+document.getElementById('exec-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const browser = document.getElementById('ex-browser').value;
+  const strategies = document.getElementById('ex-strategies').value.split(',').map(s=>s.trim()).filter(Boolean);
+  const autoHeal = document.getElementById('ex-autoheal').checked;
+
+  document.getElementById('progress').classList.remove('hidden');
+  const stepList = document.getElementById('step-list');
+  stepList.innerHTML = '';
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/execute/${testId}`);
+
+  ws.onopen = () => {
+    // Options are sent in the URL / pre-configured; execution starts immediately
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'step') {
+      const s = msg.data;
+      const icon = s.result === 'passed' ? '✓' : '✗';
+      const li = document.createElement('li');
+      li.className = s.result === 'passed' ? 'pass' : 'fail';
+      li.textContent = `${icon} Step ${s.step_number} — ${s.action?.action_type} [${s.resolution_method || '—'}]${s.healed ? ' (healed)' : ''} ${s.duration_ms}ms`;
+      stepList.appendChild(li);
+    } else if (msg.type === 'done') {
+      const r = msg.report;
+      const sum = document.getElementById('summary');
+      sum.classList.remove('hidden');
+      sum.innerHTML = `
+        <div class="summary-box">
+          <span class="pass">✓ ${r.passed} passed</span>
+          <span class="fail">✗ ${r.failed} failed</span>
+          <span class="heal">⚕ ${r.healed_steps} healed</span>
+          <span>${r.duration_s.toFixed(2)}s</span>
+          <a class="btn btn-sm" href="/tests/${testId}/reports/${r.id}">View Report</a>
+        </div>`;
+    } else if (msg.type === 'error') {
+      const li = document.createElement('li');
+      li.className = 'fail';
+      li.textContent = `Error: ${msg.message}`;
+      stepList.appendChild(li);
+    }
+  };
+});
+</script>
+{% endblock %}

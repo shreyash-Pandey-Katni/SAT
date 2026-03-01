@@ -1,0 +1,42 @@
+[browser]
+type = "chromium"          # "chromium" | "firefox"
+headless = false
+viewport_width = 1920
+viewport_height = 1080
+slow_mo = 0                # ms between playwright actions (0 = fastest)
+
+[recorder]
+output_dir = "./recordings"
+capture_screenshots = true
+screenshot_format = "png"
+debounce_click_ms = 200
+debounce_typing_ms = 500
+capture_dom_snapshot = true
+auto_generate_cnl = true
+navigation_causation_window_ms = 2000   # nav within this window after click/type is NOT recorded
+
+[executor]
+timeout_per_step_s = 10
+strategies = ["selector", "embedding", "vlm"]
+auto_heal = true
+wait_after_action = "networkidle"       # "networkidle" | "domcontentloaded" | "load" | "none"
+
+[executor.selector]
+timeout_ms = 5000
+
+[executor.embedding]
+model = "nomic-embed-text"
+min_cosine_similarity = 0.85
+max_candidates = 50
+concurrency = 8                         # parallel Ollama embedding requests
+ollama_base_url = "http://localhost:11434"
+
+[executor.vlm]
+model = "llava:13b"
+ollama_base_url = "http://localhost:11434"
+temperature = 0.1
+max_tokens = 1024
+
+[web]
+host = "0.0.0.0"
+port = 8000

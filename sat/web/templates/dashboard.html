@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Recorded Tests</h1>
+  <a class="btn btn-primary" href="/record">+ New Recording</a>
+</div>
+
+<div id="tests-container">
+  <p class="loading">Loading…</p>
+</div>
+
+<template id="test-row-tpl">
+  <div class="test-card">
+    <div class="test-card__info">
+      <span class="test-card__name"></span>
+      <span class="test-card__meta"></span>
+    </div>
+    <div class="test-card__actions">
+      <a class="btn btn-sm">View</a>
+      <a class="btn btn-sm btn-success">Execute</a>
+      <button class="btn btn-sm btn-danger" data-action="delete">Delete</button>
+    </div>
+  </div>
+</template>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+(async () => {
+  const res = await fetch('/api/recordings');
+  const tests = await res.json();
+  const container = document.getElementById('tests-container');
+  container.innerHTML = '';
+  if (!tests.length) { container.innerHTML = '<p class="empty">No recordings yet.</p>'; return; }
+  const tpl = document.getElementById('test-row-tpl').content;
+  tests.forEach(t => {
+    const card = tpl.cloneNode(true);
+    card.querySelector('.test-card__name').textContent = t.name;
+    card.querySelector('.test-card__meta').textContent =
+      `${t.steps} steps · ${t.browser} · ${t.created_at.slice(0, 16)}${t.has_cnl ? ' · CNL' : ''}`;
+    const [viewBtn, execBtn, delBtn] = card.querySelectorAll('a, a, button');
+    viewBtn.href = `/tests/${t.id}`;
+    execBtn.href = `/tests/${t.id}/execute`;
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`Delete "${t.name}"?`)) return;
+      await fetch(`/api/recordings/${t.id}`, {method: 'DELETE'});
+      delBtn.closest('.test-card').remove();
+    });
+    container.appendChild(card);
+  });
+})();
+</script>
+{% endblock %}

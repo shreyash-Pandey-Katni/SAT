@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Test Detail{% endblock %}
+{% block content %}
+<div id="test-detail">
+  <p class="loading">Loading…</p>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const testId = '{{ test_id }}';
+(async () => {
+  const res = await fetch(`/api/recordings/${testId}`);
+  if (!res.ok) { document.getElementById('test-detail').textContent = 'Not found.'; return; }
+  const t = await res.json();
+  const el = document.getElementById('test-detail');
+  el.innerHTML = `
+    <div class="page-header">
+      <h1>${t.name}</h1>
+      <div>
+        <a class="btn btn-sm" href="/tests/${t.id}/cnl">Edit CNL</a>
+        <a class="btn btn-sm btn-success" href="/tests/${t.id}/execute">Execute</a>
+      </div>
+    </div>
+    <p class="meta">ID: <code>${t.id}</code> · ${t.browser} · ${t.created_at.slice(0,16)}</p>
+    <p>Start URL: <a href="${t.start_url}" target="_blank">${t.start_url}</a></p>
+    ${t.cnl ? `<pre class="cnl-block">${t.cnl}</pre>` : ''}
+    <h3>Actions (${t.actions.length})</h3>
+    <table class="table">
+      <thead><tr><th>#</th><th>Type</th><th>Selector / Value</th><th>CNL</th></tr></thead>
+      <tbody>
+        ${t.actions.map(a => `
+          <tr>
+            <td>${a.step_number}</td>
+            <td><code>${a.action_type}</code></td>
+            <td>${a.selector?.css || a.selector?.id || a.value || ''}</td>
+            <td>${a.cnl_step || ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+})();
+</script>
+{% endblock %}

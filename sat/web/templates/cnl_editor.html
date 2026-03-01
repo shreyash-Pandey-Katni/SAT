@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}CNL Editor{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>CNL Editor</h1>
+  <a class="btn btn-sm" href="/tests/{{ test_id }}">← Back</a>
+</div>
+
+<div class="cnl-editor">
+  <textarea id="cnl-input" rows="20" placeholder="# Write your CNL steps here
+Click &quot;Log in&quot; Button;
+Type &quot;hello@example.com&quot; in Email Input;
+Click &quot;Submit&quot; Button;"></textarea>
+  <div id="validation-result"></div>
+  <div class="form-row">
+    <button class="btn" id="validate-btn">Validate</button>
+    <button class="btn btn-primary" id="save-btn">Save</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const testId = '{{ test_id }}';
+const input = document.getElementById('cnl-input');
+const result = document.getElementById('validation-result');
+
+// Load existing CNL
+(async () => {
+  const res = await fetch(`/api/recordings/${testId}/cnl`);
+  if (res.ok) { const d = await res.json(); input.value = d.cnl || ''; }
+})();
+
+document.getElementById('validate-btn').addEventListener('click', async () => {
+  const r = await fetch('/api/cnl/validate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cnl: input.value})
+  });
+  const d = await r.json();
+  if (d.valid) {
+    result.innerHTML = '<span class="ok">✓ Valid</span>';
+  } else {
+    result.innerHTML = d.errors.map(e => `<div class="err">Line ${e.line}: ${e.message}</div>`).join('');
+  }
+});
+
+document.getElementById('save-btn').addEventListener('click', async () => {
+  const r = await fetch(`/api/recordings/${testId}/cnl`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cnl: input.value})
+  });
+  if (r.ok) {
+    const d = await r.json();
+    result.innerHTML = `<span class="ok">✓ Saved — ${d.steps_parsed} steps parsed</span>`;
+  } else {
+    const d = await r.json();
+    result.innerHTML = `<span class="err">Error: ${d.detail}</span>`;
+  }
+});
+</script>
+{% endblock %}

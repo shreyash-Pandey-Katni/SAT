@@ -1,0 +1,249 @@
+"""Executor — main orchestrator for intelligent test replay.
+
+Strategy chain: Selector → Embedding → VLM → Fail
+Auto-heal: updates test file when fallback strategies succeed.
+Event-driven: Playwright auto-wait, no polling.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Coroutine
+
+from playwright.async_api import ElementHandle, Page
+
+from sat.config import SATConfig
+from sat.core.models import (
+    ActionType,
+    ExecutionStepResult,
+    RecordedAction,
+    RecordedTest,
+    ResolutionMethod,
+    StepResult,
+)
+from sat.core.playwright_manager import PlaywrightManager
+from sat.executor.action_performer import ActionPerformer
+from sat.executor.auto_healer import AutoHealer
+from sat.executor.report import ReportGenerator
+from sat.executor.strategies.embedding_strategy import EmbeddingStrategy
+from sat.executor.strategies.selector_strategy import SelectorStrategy
+from sat.executor.strategies.vlm_strategy import VLMStrategy
+from sat.executor.strategy_chain import StrategyChain
+from sat.core.models import ExecutionReport
+
+logger = logging.getLogger(__name__)
+
+StepCallback = Callable[[ExecutionStepResult], Coroutine[Any, Any, None]]
+
+
+class Executor:
+    """Replays a :class:`RecordedTest` using an intelligent fallback chain."""
+
+    def __init__(self, config: SATConfig) -> None:
+        self._config = config
+        self._recordings_dir = Path(config.recorder.output_dir)
+        self._step_callbacks: list[StepCallback] = []
+
+        # Build strategy chain from config
+        ec = config.executor
+        strategies_map = {
+            "selector": lambda: SelectorStrategy(timeout_ms=ec.selector.timeout_ms),
+            "embedding": lambda: EmbeddingStrategy(config=ec.embedding),
+            "vlm": lambda: VLMStrategy(config=ec.vlm),
+        }
+        self._strategy_chain = StrategyChain([
+            strategies_map[name]()
+            for name in ec.strategies
+            if name in strategies_map
+        ])
+        self._performer = ActionPerformer()
+        self._healer = AutoHealer(enabled=ec.auto_heal)
+        self._reporter = ReportGenerator()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def on_step_complete(self, callback: StepCallback) -> None:
+        """Register a callback invoked after each step (for live UI feed)."""
+        self._step_callbacks.append(callback)
+
+    async def execute(self, test: RecordedTest) -> ExecutionReport:
+        """Replay all actions in *test* and return a full :class:`ExecutionReport`."""
+        test_path = self._recordings_dir / test.id / "test.json"
+        reports_dir = self._recordings_dir / test.id / "reports"
+        screenshots_dir = self._recordings_dir / test.id / "exec_screenshots"
+
+        manager = PlaywrightManager(self._config)
+        page = await manager.start(url=test.start_url)
+
+        started_at = datetime.utcnow()
+        step_results: list[ExecutionStepResult] = []
+
+        for action in test.actions:
+            result = await self._execute_step(
+                page=page,
+                action=action,
+                test=test,
+                test_path=test_path,
+                screenshots_dir=screenshots_dir,
+                all_pages=manager.all_pages(),
+            )
+            step_results.append(result)
+
+            for cb in self._step_callbacks:
+                try:
+                    await cb(result)
+                except Exception as exc:
+                    logger.error("Step callback error: %s", exc)
+
+        await manager.stop()
+
+        report = self._reporter.build(test.id, test.name, step_results, started_at)
+        report_path = self._reporter.save(report, reports_dir)
+        logger.info(
+            "Execution complete — passed=%d failed=%d healed=%d  report=%s",
+            report.passed, report.failed, report.healed_steps, report_path,
+        )
+        return report
+
+    # ------------------------------------------------------------------
+    # Single step execution
+    # ------------------------------------------------------------------
+
+    async def _execute_step(
+        self,
+        page: Page,
+        action: RecordedAction,
+        test: RecordedTest,
+        test_path: Path,
+        screenshots_dir: Path,
+        all_pages: list[Page],
+    ) -> ExecutionStepResult:
+        start_ms = time.monotonic() * 1000
+
+        logger.info(
+            "[step %d/%d] %s  url=%s",
+            action.step_number, len(test.actions), action.action_type.value, action.url,
+        )
+
+        # ── Tab / nav actions don't need element resolution ──────────────
+        if action.action_type in (
+            ActionType.NAVIGATE,
+            ActionType.NEW_TAB,
+            ActionType.SWITCH_TAB,
+            ActionType.CLOSE_TAB,
+            ActionType.SCROLL,
+        ):
+            try:
+                await self._performer.perform(page, None, action, all_pages)
+                await self._wait_stable(page)
+                return self._ok(action, ResolutionMethod.NONE, None, False, start_ms)
+            except Exception as exc:
+                return self._fail(action, str(exc), start_ms)
+
+        # ── Element actions: resolve → perform → heal ────────────────────
+        element, method, score = await self._strategy_chain.resolve_element(page, action)
+
+        if element is None:
+            return self._fail(
+                action,
+                "Element not found — all strategies exhausted",
+                start_ms,
+                resolution_method=ResolutionMethod.NONE,
+            )
+
+        # Perform the action
+        try:
+            await self._performer.perform(page, element, action, all_pages)
+            await self._wait_stable(page)
+        except Exception as exc:
+            return self._fail(action, str(exc), start_ms, resolution_method=method)
+
+        # Auto-heal if we used a fallback strategy
+        healed = False
+        if method not in (ResolutionMethod.SELECTOR, ResolutionMethod.NONE):
+            healed = await self._healer.heal(
+                page, action, element, method, score, test, test_path
+            )
+
+        # Capture post-action screenshot for report
+        scr_path = await self._screenshot(page, screenshots_dir, action.step_number)
+
+        return ExecutionStepResult(
+            step_number=action.step_number,
+            action=action,
+            result=StepResult.PASSED,
+            resolution_method=method,
+            similarity_score=score,
+            duration_ms=int(time.monotonic() * 1000 - start_ms),
+            screenshot_path=scr_path,
+            healed=healed,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    async def _wait_stable(self, page: Page) -> None:
+        mode = self._config.executor.wait_after_action
+        if mode == "none":
+            return
+        try:
+            await page.wait_for_load_state(mode, timeout=5000)  # type: ignore[arg-type]
+        except Exception:
+            pass  # Timeout is acceptable — page may already be stable
+
+    async def _screenshot(
+        self, page: Page, directory: Path, step: int
+    ) -> str | None:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"step_{step:04d}.png"
+            await page.screenshot(path=str(path), type="png")
+            return str(path)
+        except Exception as exc:
+            logger.debug("Post-execution screenshot failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _ok(
+        action: RecordedAction,
+        method: ResolutionMethod,
+        score: float | None,
+        healed: bool,
+        start_ms: float,
+        screenshot_path: str | None = None,
+    ) -> ExecutionStepResult:
+        return ExecutionStepResult(
+            step_number=action.step_number,
+            action=action,
+            result=StepResult.PASSED,
+            resolution_method=method,
+            similarity_score=score,
+            duration_ms=int(time.monotonic() * 1000 - start_ms),
+            screenshot_path=screenshot_path,
+            healed=healed,
+        )
+
+    @staticmethod
+    def _fail(
+        action: RecordedAction,
+        error: str,
+        start_ms: float,
+        resolution_method: ResolutionMethod = ResolutionMethod.NONE,
+    ) -> ExecutionStepResult:
+        logger.error(
+            "[step %d] FAILED — %s", action.step_number, error
+        )
+        return ExecutionStepResult(
+            step_number=action.step_number,
+            action=action,
+            result=StepResult.FAILED,
+            resolution_method=resolution_method,
+            error=error,
+            duration_ms=int(time.monotonic() * 1000 - start_ms),
+        )

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}New Recording{% endblock %}
+{% block content %}
+<h1>New Recording</h1>
+
+<form id="record-form" class="form">
+  <label>Start URL
+    <input type="url" id="url" placeholder="https://example.com" required/>
+  </label>
+  <label>Recording Name
+    <input type="text" id="name" placeholder="My Test" required/>
+  </label>
+  <label>Browser
+    <select id="browser">
+      <option value="chromium">Chromium</option>
+      <option value="firefox">Firefox</option>
+    </select>
+  </label>
+  <div class="form-row">
+    <button type="submit" class="btn btn-primary" id="start-btn">Start Recording</button>
+    <button type="button" class="btn btn-danger hidden" id="stop-btn">Stop</button>
+  </div>
+</form>
+
+<div id="status" class="status hidden"></div>
+<div id="actions-log" class="log hidden">
+  <h3>Captured actions <span id="action-count">0</span></h3>
+  <ul id="action-list"></ul>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let ws;
+const form = document.getElementById('record-form');
+const startBtn = document.getElementById('start-btn');
+const stopBtn = document.getElementById('stop-btn');
+const status = document.getElementById('status');
+const actionsLog = document.getElementById('actions-log');
+const actionList = document.getElementById('action-list');
+let count = 0;
+
+form.addEventListener('submit', e => {
+  e.preventDefault();
+  const url = document.getElementById('url').value;
+  const name = document.getElementById('name').value;
+  const browser = document.getElementById('browser').value;
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws/record`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({url, name, browser}));
+    startBtn.classList.add('hidden');
+    stopBtn.classList.remove('hidden');
+    status.classList.remove('hidden');
+    status.textContent = 'Recording…';
+    actionsLog.classList.remove('hidden');
+  };
+
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'action') {
+      count++;
+      document.getElementById('action-count').textContent = count;
+      const li = document.createElement('li');
+      li.textContent = `${count}. ${msg.data.action_type} — ${msg.data.cnl_step || ''}`;
+      actionList.appendChild(li);
+    } else if (msg.type === 'done') {
+      status.textContent = `Saved! Test ID: ${msg.test_id}`;
+      stopBtn.classList.add('hidden');
+      startBtn.classList.remove('hidden');
+      window.location.href = `/tests/${msg.test_id}`;
+    } else if (msg.type === 'error') {
+      status.textContent = `Error: ${msg.message}`;
+    }
+  };
+
+  ws.onerror = () => { status.textContent = 'WebSocket error.'; };
+});
+
+stopBtn.addEventListener('click', () => {
+  if (ws) ws.send(JSON.stringify({type: 'stop'}));
+});
+</script>
+{% endblock %}

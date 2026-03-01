@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Execution Report{% endblock %}
+{% block content %}
+<div id="report-container">
+  <p class="loading">Loading…</p>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const testId = '{{ test_id }}';
+const reportId = '{{ report_id }}';
+(async () => {
+  const res = await fetch(`/api/recordings/${testId}/reports/${reportId}`);
+  if (!res.ok) { document.getElementById('report-container').textContent = 'Not found.'; return; }
+  const r = await res.json();
+  const el = document.getElementById('report-container');
+  el.innerHTML = `
+    <div class="page-header">
+      <h1>Report — ${r.test_name}</h1>
+      <a class="btn btn-sm" href="/tests/${testId}">← Back</a>
+    </div>
+    <div class="summary-box">
+      <span class="pass">✓ ${r.passed} passed</span>
+      <span class="fail">✗ ${r.failed} failed</span>
+      <span class="heal">⚕ ${r.healed_steps} healed</span>
+      <span>${r.duration_s.toFixed(2)}s</span>
+    </div>
+    <h3>Steps</h3>
+    <table class="table">
+      <thead><tr><th>#</th><th>Type</th><th>Result</th><th>Strategy</th><th>Similarity</th><th>Healed</th><th>ms</th><th>Error</th></tr></thead>
+      <tbody>
+        ${r.steps.map(s => `
+          <tr class="${s.result}">
+            <td>${s.step_number}</td>
+            <td><code>${s.action?.action_type || ''}</code></td>
+            <td>${s.result}</td>
+            <td>${s.resolution_method || '—'}</td>
+            <td>${s.similarity_score != null ? s.similarity_score.toFixed(3) : '—'}</td>
+            <td>${s.healed ? '✓' : '—'}</td>
+            <td>${s.duration_ms}</td>
+            <td class="err-cell">${s.error || ''}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+})();
+</script>
+{% endblock %}
