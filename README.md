@@ -80,10 +80,10 @@ sat web
 # Comment
 Navigate to "https://example.com";
 Click "Log in" Button;
-Type "user@example.com" in Email Input;
-Type "secret" in Password Input;
+Type "user@example.com" in "Email" Input;
+Type "secret" in "Password" Input;
 Click "Submit" Button;
-Select "Option A" from Dropdown Select;
+Select "Option A" in "Category" Dropdown;
 ```
 
 ## Configuration
