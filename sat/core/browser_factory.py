@@ -25,10 +25,16 @@ class BrowserFactory:
             else self._playwright.firefox
         )
 
+        # NOTE: Do NOT pass --start-maximized — Playwright internally uses
+        # --no-startup-window and manages windows via CDP. Mixing both crashes Chrome.
+        chromium_extra: list[str] = [
+            "--disable-gpu",          # Avoids SIGSEGV on some Linux setups
+            "--disable-dev-shm-usage", # Prevents /dev/shm OOM in containers
+        ]
         self._browser = await browser_type.launch(
             headless=self._config.headless,
             slow_mo=self._config.slow_mo,
-            args=["--start-maximized"] if self._config.type == "chromium" else [],
+            args=chromium_extra if self._config.type in ("chromium", "chrome") else [],
         )
 
         context = await self._browser.new_context(
