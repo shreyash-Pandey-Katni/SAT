@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 
@@ -9,13 +10,33 @@ from playwright.async_api import Browser, BrowserContext, Playwright, async_play
 
 from sat.config import BrowserConfig
 
-# Candidate system Chrome/Chromium binaries (checked in order)
-_SYSTEM_CHROME_CANDIDATES = [
-    "google-chrome",
-    "google-chrome-stable",
-    "chromium-browser",
-    "chromium",
-]
+# Candidate system Chrome/Chromium binaries per platform (checked in order)
+if sys.platform == "win32":
+    _SYSTEM_CHROME_CANDIDATES = [
+        "chrome",
+        "chrome.exe",
+    ]
+    # Well-known install directories on Windows
+    _WINDOWS_CHROME_PATHS = [
+        os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+        os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+    ]
+elif sys.platform == "darwin":
+    _SYSTEM_CHROME_CANDIDATES = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "google-chrome",
+        "chromium",
+    ]
+    _WINDOWS_CHROME_PATHS = []
+else:
+    _SYSTEM_CHROME_CANDIDATES = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium-browser",
+        "chromium",
+    ]
+    _WINDOWS_CHROME_PATHS = []
 
 
 class BrowserFactory:
@@ -36,9 +57,9 @@ class BrowserFactory:
             else self._playwright.firefox
         )
 
-        chromium_extra: list[str] = [
-            "--disable-dev-shm-usage",  # Prevents /dev/shm OOM in containers
-        ]
+        chromium_extra: list[str] = []
+        if sys.platform != "win32":
+            chromium_extra.append("--disable-dev-shm-usage")  # /dev/shm OOM guard (Linux/macOS)
 
         launch_kwargs: dict = {
             "headless": self._config.headless,
@@ -48,9 +69,9 @@ class BrowserFactory:
         if self._config.type in ("chromium", "chrome"):
             launch_kwargs["args"] = chromium_extra
 
-            # Resolve executable: explicit config > auto-detect system Chrome (headed on Linux)
+            # Resolve executable: explicit config > auto-detect system Chrome (headed mode)
             exe = self._config.executable_path.strip()
-            if not exe and not self._config.headless and sys.platform == "linux":
+            if not exe and not self._config.headless:
                 exe = self._find_system_chrome() or ""
             if exe:
                 launch_kwargs["executable_path"] = exe
@@ -88,6 +109,10 @@ class BrowserFactory:
             path = shutil.which(candidate)
             if path:
                 return path
+        # On Windows, also check well-known install directories
+        for path_str in _WINDOWS_CHROME_PATHS:
+            if os.path.isfile(path_str):
+                return path_str
         return None
 
     async def __aenter__(self) -> BrowserContext:

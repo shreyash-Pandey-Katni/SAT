@@ -71,15 +71,25 @@ def record(
 
         # Use asyncio-native signal handler: does NOT raise KeyboardInterrupt
         # into the event loop, so in-flight awaits complete cleanly.
-        loop.add_signal_handler(signal.SIGINT, _graceful_stop)
-        loop.add_signal_handler(signal.SIGTERM, _graceful_stop)
+        # Windows ProactorEventLoop doesn't support add_signal_handler,
+        # so fall back to signal.signal() there.
+        if sys.platform != "win32":
+            loop.add_signal_handler(signal.SIGINT, _graceful_stop)
+            loop.add_signal_handler(signal.SIGTERM, _graceful_stop)
+        else:
+            signal.signal(signal.SIGINT, lambda *_: _graceful_stop())
+            signal.signal(signal.SIGTERM, lambda *_: _graceful_stop())
         try:
             test = await recorder.record(url, name=name, description=description, tags=tag_list)
             console.print(f"\n[green]Recording saved[/green]  id=[bold]{test.id}[/bold]  steps={len(test.actions)}")
         finally:
             try:
-                loop.remove_signal_handler(signal.SIGINT)
-                loop.remove_signal_handler(signal.SIGTERM)
+                if sys.platform != "win32":
+                    loop.remove_signal_handler(signal.SIGINT)
+                    loop.remove_signal_handler(signal.SIGTERM)
+                else:
+                    signal.signal(signal.SIGINT, signal.SIG_DFL)
+                    signal.signal(signal.SIGTERM, signal.SIG_DFL)
             except Exception:
                 pass
 
@@ -285,7 +295,7 @@ def cnl_update(
 
 @app.command()
 def web(
-    host: str = typer.Option("0.0.0.0", "--host"),
+    host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port", "-p"),
     config_path: Optional[str] = typer.Option(None, "--config", "-c"),
 ) -> None:

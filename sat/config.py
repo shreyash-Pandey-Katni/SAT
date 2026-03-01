@@ -27,7 +27,8 @@ class BrowserConfig:
     viewport_height: int = 1080
     slow_mo: int = 0
     # Optional: explicit path to Chrome/Chromium/Firefox binary.
-    # When empty and headless=False on Linux, auto-detection of system Chrome is used.
+    # When empty and headless=False, auto-detection of system Chrome is used
+    # (Linux, macOS, and Windows).
     executable_path: str = ""
 
 
@@ -78,7 +79,7 @@ class ExecutorConfig:
 
 @dataclass
 class WebConfig:
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8000
 
 

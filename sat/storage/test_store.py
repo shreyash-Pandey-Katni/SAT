@@ -4,10 +4,25 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 from sat.core.models import ExecutionReport, RecordedTest
+
+
+def _safe_replace(src: str, dst: str | Path, retries: int = 3) -> None:
+    """os.replace with retry for Windows (file may be held by antivirus/indexer)."""
+    for attempt in range(retries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform == "win32" and attempt < retries - 1:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                raise
 
 
 class TestStore:
@@ -68,9 +83,12 @@ class TestStore:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(test.model_dump_json(indent=2))
-            os.replace(tmp, path)
+            _safe_replace(tmp, path)
         except Exception:
-            os.unlink(tmp)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
             raise
         return path
 

@@ -56,6 +56,8 @@ class EventListener:
         self._auto_generate_cnl = auto_generate_cnl
         self._step_counter = 0
         self._pages: set[int] = set()           # track which pages are already wired
+        self._active_tab_id: str | None = None  # tab that last received an action
+        self._context_wired: bool = False        # context-level listeners attached once
 
     # ------------------------------------------------------------------
     # Public setup
@@ -101,15 +103,37 @@ class EventListener:
         page.on("framenavigated", self._make_navigate_handler(page))
         page.on("close", self._on_tab_close)
 
-        # 5. Newly opened tabs (from context)
-        page.context.on("page", self._on_new_page)
+        # 5. Newly opened tabs — register ONCE per context (not per page)
+        if not self._context_wired:
+            self._context_wired = True
+            page.context.on("page", self._on_new_page)
 
     # ------------------------------------------------------------------
     # Internal helpers — return async callables bound to a specific page
     # ------------------------------------------------------------------
 
+    async def _maybe_emit_switch_tab(self, page: Page) -> None:
+        """If *page* is different from the previously active tab, emit SWITCH_TAB."""
+        tab_id = str(id(page))
+        if self._active_tab_id is not None and self._active_tab_id != tab_id:
+            step = self._next_step()
+            url = page.url or ""
+            try:
+                title = await page.title()
+            except Exception:
+                title = ""
+            cnl = (
+                f'Switch to tab "{title or url}";'
+                if self._auto_generate_cnl else None
+            )
+            action = self._builder.build_switch_tab(url, title, step, tab_id, cnl)
+            await self._emit(action)
+        self._active_tab_id = tab_id
+
     def _make_click_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            await self._maybe_emit_switch_tab(page)
+
             step = self._next_step()
             url = page.url
             tab_id = str(id(page))
@@ -130,6 +154,8 @@ class EventListener:
 
     def _make_input_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            await self._maybe_emit_switch_tab(page)
+
             step = self._next_step()
             url = page.url
             tab_id = str(id(page))
@@ -150,6 +176,8 @@ class EventListener:
 
     def _make_select_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            await self._maybe_emit_switch_tab(page)
+
             step = self._next_step()
             url = page.url
             tab_id = str(id(page))
@@ -186,13 +214,34 @@ class EventListener:
         return handler
 
     async def _on_new_page(self, page: Page) -> None:
-        """Called instantly when a new tab/window opens."""
-        step = self._next_step()
+        """Called instantly when a new tab/window opens.
+
+        Browsers focus the new tab by default, so we also emit a SWITCH_TAB
+        after the NEW_TAB action.  This way the executor knows to move focus.
+        """
         tab_id = str(id(page))
+
+        # Record the new-tab event
+        step = self._next_step()
         url = page.url or "about:blank"
         cnl = f'Open new tab "{url}";' if self._auto_generate_cnl else None
         action = self._builder.build_new_tab(url, step, tab_id, cnl)
         await self._emit(action)
+
+        # Record focus-switch to the new tab
+        step2 = self._next_step()
+        try:
+            title = await page.title()
+        except Exception:
+            title = ""
+        cnl2 = (
+            f'Switch to tab "{title or url}";'
+            if self._auto_generate_cnl else None
+        )
+        switch_action = self._builder.build_switch_tab(url, title, step2, tab_id, cnl2)
+        await self._emit(switch_action)
+        self._active_tab_id = tab_id
+
         # Attach listeners to the new page too
         await self.attach(page)
 
@@ -204,6 +253,9 @@ class EventListener:
         action = self._builder.build_close_tab(page.url, step, tab_id, cnl)
         await self._emit(action)
         self._pages.discard(id(page))
+        # If the closed tab was the active tab, clear so next action triggers SWITCH_TAB
+        if self._active_tab_id == tab_id:
+            self._active_tab_id = None
 
     # ------------------------------------------------------------------
     # Artifact capture helpers

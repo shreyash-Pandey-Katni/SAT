@@ -20,8 +20,12 @@ class ActionPerformer:
         element: ElementHandle | None,
         action: RecordedAction,
         all_pages: list[Page] | None = None,
-    ) -> None:
+    ) -> Page | None:
         """Execute *action* on *element* (or page-level for navigate/tab actions).
+
+        Returns a :class:`Page` when the active page changes (NEW_TAB,
+        SWITCH_TAB, CLOSE_TAB) so the caller can update its reference.
+        Returns ``None`` when the active page is unchanged.
 
         Playwright auto-waits after each action — no explicit sleeps needed.
         """
@@ -44,20 +48,26 @@ class ActionPerformer:
                 await page.goto(url, wait_until="domcontentloaded")
 
             case ActionType.NEW_TAB:
-                # The context handles new tab detection — skip during playback
                 url = action.value or ""
-                if url:
-                    new_page = await page.context.new_page()
+                new_page = await page.context.new_page()
+                if url and url != "about:blank":
                     await new_page.goto(url, wait_until="domcontentloaded")
+                return new_page
 
             case ActionType.SWITCH_TAB:
                 if all_pages:
                     target_url = action.value or ""
                     target_title = (action.metadata or {}).get("title", "")
-                    await self._switch_tab(page, all_pages, target_url, target_title)
+                    found = await self._switch_tab(page, all_pages, target_url, target_title)
+                    if found is not None:
+                        return found
 
             case ActionType.CLOSE_TAB:
+                remaining = [p for p in (all_pages or []) if p != page]
                 await page.close()
+                if remaining:
+                    await remaining[-1].bring_to_front()
+                    return remaining[-1]
 
             case ActionType.SCROLL:
                 vp = action.viewport or {}
@@ -67,6 +77,8 @@ class ActionPerformer:
 
             case _:
                 logger.warning("ActionPerformer: unknown action type %s", action.action_type)
+
+        return None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -98,7 +110,11 @@ class ActionPerformer:
 
     async def _switch_tab(
         self, current: Page, all_pages: list[Page], target_url: str, target_title: str
-    ) -> None:
+    ) -> Page | None:
+        """Find and focus the tab matching *target_url* or *target_title*.
+
+        Returns the matching :class:`Page` or ``None`` if not found.
+        """
         for p in all_pages:
             if p == current:
                 continue
@@ -106,8 +122,14 @@ class ActionPerformer:
             page_title = await p.title()
             if target_url and target_url in page_url:
                 await p.bring_to_front()
-                return
+                return p
             if target_title and target_title in page_title:
                 await p.bring_to_front()
-                return
+                return p
+        # Fallback: if there's only one other tab, switch to it
+        others = [p for p in all_pages if p != current]
+        if len(others) == 1:
+            await others[0].bring_to_front()
+            return others[0]
         logger.warning("SWITCH_TAB: no matching tab found (url=%r title=%r)", target_url, target_title)
+        return None

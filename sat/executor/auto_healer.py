@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +26,19 @@ from sat.core.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_replace(src: str, dst: str | Path, retries: int = 3) -> None:
+    """os.replace with retry for Windows (file may be held by antivirus/indexer)."""
+    for attempt in range(retries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform == "win32" and attempt < retries - 1:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                raise
 
 # JS to extract fresh selector info from a live element
 _EXTRACT_SELECTOR_JS = """
@@ -169,7 +184,12 @@ class AutoHealer:
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 fh.write(test.model_dump_json(indent=2))
-            os.replace(tmp_path, path)          # atomic on POSIX
+            # os.replace is atomic on POSIX; on Windows it may fail if the
+            # target file is held open (antivirus, indexers), so we retry.
+            _safe_replace(tmp_path, path)
         except Exception:
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             raise

@@ -79,13 +79,14 @@ class Executor:
 
         manager = PlaywrightManager(self._config)
         page = await manager.start(url=test.start_url)
+        self._active_page: Page = page         # tracks focus across tab actions
 
         started_at = datetime.utcnow()
         step_results: list[ExecutionStepResult] = []
 
         for action in test.actions:
             result = await self._execute_step(
-                page=page,
+                page=self._active_page,
                 action=action,
                 test=test,
                 test_path=test_path,
@@ -139,7 +140,11 @@ class Executor:
             ActionType.SCROLL,
         ):
             try:
-                await self._performer.perform(page, None, action, all_pages)
+                new_page = await self._performer.perform(page, None, action, all_pages)
+                # Update the active page when a tab action changes focus
+                if new_page is not None:
+                    self._active_page = new_page
+                    page = new_page
                 await self._wait_stable(page)
                 return self._ok(action, ResolutionMethod.NONE, None, False, start_ms)
             except Exception as exc:

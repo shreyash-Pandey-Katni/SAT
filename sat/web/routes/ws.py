@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import signal
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
