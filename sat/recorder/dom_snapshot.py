@@ -11,10 +11,7 @@ from sat.constants import INTERACTABLE_SELECTORS, OUTER_HTML_MAX_LEN, PARENT_HTM
 
 # JavaScript that extracts interactable element data and returns a JSON array.
 _EXTRACT_JS = """
-() => {
-    const SELECTORS = arguments[0];
-    const MAX_HTML = arguments[1];
-    const MAX_PARENT = arguments[2];
+([SELECTORS, MAX_HTML, MAX_PARENT]) => {
 
     function truncate(s, n) {
         if (!s) return null;
@@ -63,9 +60,7 @@ class DOMSnapshot:
         """Return a list of interactable element descriptors from the live page."""
         raw = await page.evaluate(
             _EXTRACT_JS,
-            INTERACTABLE_SELECTORS,
-            OUTER_HTML_MAX_LEN,
-            PARENT_HTML_MAX_LEN,
+            [INTERACTABLE_SELECTORS, OUTER_HTML_MAX_LEN, PARENT_HTML_MAX_LEN],
         )
         if isinstance(raw, str):
             return json.loads(raw)

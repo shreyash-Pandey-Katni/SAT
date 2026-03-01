@@ -42,9 +42,14 @@ class PlaywrightManager:
         return page
 
     async def stop(self) -> None:
-        await self._factory.stop()
-        self._pages.clear()
-        self._active_tab_id = None
+        try:
+            await self._factory.stop()
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).debug("Playwright stop warning (non-fatal): %s", exc)
+        finally:
+            self._pages.clear()
+            self._active_tab_id = None
 
     # ------------------------------------------------------------------
     # Page management

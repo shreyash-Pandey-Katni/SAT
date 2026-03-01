@@ -60,19 +60,28 @@ def record(
         cfg.browser.type = browser
 
     recorder = Recorder(cfg)
-
-    def _sigint_handler(*_):
-        console.print("\n[yellow]Stopping recorder...[/yellow]")
-        recorder.stop()
-
-    signal.signal(signal.SIGINT, _sigint_handler)
-
     tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
 
     async def _run():
-        test = await recorder.record(url, name=name, description=description, tags=tag_list)
-        console.print(f"\n[green]Recording saved[/green]  id=[bold]{test.id}[/bold]  steps={len(test.actions)}")
-        return test
+        loop = asyncio.get_running_loop()
+
+        def _graceful_stop():
+            console.print("\n[yellow]Stopping recorder — finishing up...[/yellow]")
+            recorder.stop()
+
+        # Use asyncio-native signal handler: does NOT raise KeyboardInterrupt
+        # into the event loop, so in-flight awaits complete cleanly.
+        loop.add_signal_handler(signal.SIGINT, _graceful_stop)
+        loop.add_signal_handler(signal.SIGTERM, _graceful_stop)
+        try:
+            test = await recorder.record(url, name=name, description=description, tags=tag_list)
+            console.print(f"\n[green]Recording saved[/green]  id=[bold]{test.id}[/bold]  steps={len(test.actions)}")
+        finally:
+            try:
+                loop.remove_signal_handler(signal.SIGINT)
+                loop.remove_signal_handler(signal.SIGTERM)
+            except Exception:
+                pass
 
     asyncio.run(_run())
 

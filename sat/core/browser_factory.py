@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+import shutil
+import sys
+
 from playwright.async_api import Browser, BrowserContext, Playwright, async_playwright
 
 from sat.config import BrowserConfig
+
+# Candidate system Chrome/Chromium binaries (checked in order)
+_SYSTEM_CHROME_CANDIDATES = [
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium-browser",
+    "chromium",
+]
 
 
 class BrowserFactory:
@@ -25,17 +36,26 @@ class BrowserFactory:
             else self._playwright.firefox
         )
 
-        # NOTE: Do NOT pass --start-maximized — Playwright internally uses
-        # --no-startup-window and manages windows via CDP. Mixing both crashes Chrome.
         chromium_extra: list[str] = [
-            "--disable-gpu",          # Avoids SIGSEGV on some Linux setups
-            "--disable-dev-shm-usage", # Prevents /dev/shm OOM in containers
+            "--disable-dev-shm-usage",  # Prevents /dev/shm OOM in containers
         ]
-        self._browser = await browser_type.launch(
-            headless=self._config.headless,
-            slow_mo=self._config.slow_mo,
-            args=chromium_extra if self._config.type in ("chromium", "chrome") else [],
-        )
+
+        launch_kwargs: dict = {
+            "headless": self._config.headless,
+            "slow_mo": self._config.slow_mo,
+        }
+
+        if self._config.type in ("chromium", "chrome"):
+            launch_kwargs["args"] = chromium_extra
+
+            # Resolve executable: explicit config > auto-detect system Chrome (headed on Linux)
+            exe = self._config.executable_path.strip()
+            if not exe and not self._config.headless and sys.platform == "linux":
+                exe = self._find_system_chrome() or ""
+            if exe:
+                launch_kwargs["executable_path"] = exe
+
+        self._browser = await browser_type.launch(**launch_kwargs)
 
         context = await self._browser.new_context(
             viewport={
@@ -47,11 +67,28 @@ class BrowserFactory:
         return context
 
     async def stop(self) -> None:
-        """Stop browser and playwright instance."""
+        """Stop browser and playwright instance gracefully."""
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception:
+                pass  # Already closed or crashed — ignore
+            self._browser = None
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+    @staticmethod
+    def _find_system_chrome() -> str | None:
+        """Return the path to a system-installed Chrome/Chromium binary, or None."""
+        for candidate in _SYSTEM_CHROME_CANDIDATES:
+            path = shutil.which(candidate)
+            if path:
+                return path
+        return None
 
     async def __aenter__(self) -> BrowserContext:
         return await self.start()

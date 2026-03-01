@@ -62,25 +62,46 @@ class EventListener:
     # ------------------------------------------------------------------
 
     async def attach(self, page: Page) -> None:
-        """Wire up all event listeners on *page*. Safe to call multiple times."""
+        """Wire up all event listeners on *page*. Safe to call multiple times.
+
+        **Timing**: ``page.add_init_script`` only runs on *future* navigations
+        and frame-attaches — it does NOT run on a page that is already loaded.
+        So after registering the init script we also ``frame.evaluate()`` the
+        same code on every frame that already exists (main + iframes).
+        """
         if id(page) in self._pages:
             return
         self._pages.add(id(page))
 
-        # Expose Python handlers into the browser (CDP channel — not polling)
+        # 1. Expose Python handlers into the browser (CDP binding — instant,
+        #    available in ALL frames including iframes).
         await page.expose_function("__sat_click", self._make_click_handler(page))
         await page.expose_function("__sat_input", self._make_input_handler(page))
         await page.expose_function("__sat_select", self._make_select_handler(page))
 
-        # Load capture.js into every frame (incl. iframes) via addInitScript
+        # 2. Register capture.js for FUTURE navigations / child-frame attaches.
         capture_js = Path(__file__).parent / "capture.js"
         await page.add_init_script(path=str(capture_js))
 
-        # Native Playwright events (CDP WebSocket, event-driven)
+        # 3. Evaluate capture.js RIGHT NOW on every already-loaded frame
+        #    (main frame + existing iframes).  The guard inside the IIFE
+        #    (`window.__sat_capture_installed`) prevents double-installation
+        #    if a navigation fires right after this call.
+        capture_code = capture_js.read_text()
+        for frame in page.frames:
+            try:
+                await frame.evaluate(capture_code)
+            except Exception as exc:
+                logger.debug(
+                    "Could not inject capture.js into frame %s: %s",
+                    frame.url, exc,
+                )
+
+        # 4. Native Playwright events (CDP WebSocket, event-driven)
         page.on("framenavigated", self._make_navigate_handler(page))
         page.on("close", self._on_tab_close)
 
-        # Newly opened tabs (from context)
+        # 5. Newly opened tabs (from context)
         page.context.on("page", self._on_new_page)
 
     # ------------------------------------------------------------------

@@ -60,6 +60,10 @@ class SelectorInfo(BaseModel):
     input_type: str | None = None            # type attr for <input>
     outer_html_snippet: str = ""             # truncated outerHTML for embedding context
     parent_html_snippet: str | None = None
+    # iframe context — None means top-level frame
+    frame_url: str | None = None
+    # True when the element lives inside a shadow root
+    in_shadow_dom: bool = False
 
 
 # ---------------------------------------------------------------------------

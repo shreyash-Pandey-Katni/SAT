@@ -95,7 +95,15 @@ class Recorder:
         # Block until stop() is called (e.g. from CLI signal or Web UI)
         await self._stop_event.wait()
 
-        await manager.stop()
+        # Drain: give in-flight CDP event callbacks a short window to finish
+        # so we don't lose the last action(s) recorded just before Ctrl+C.
+        await asyncio.sleep(0.3)
+
+        # Gracefully close browser — ignore errors if it's already closing
+        try:
+            await manager.stop()
+        except Exception as exc:
+            logger.debug("Browser close warning (non-fatal): %s", exc)
 
         # Build and persist the test
         test = self._build_test(

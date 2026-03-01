@@ -11,7 +11,7 @@ def build_selector_from_event(data: dict) -> SelectorInfo:
     return SelectorInfo(
         tag_name=(data.get("tag") or "unknown").lower(),
         css=data.get("css"),
-        xpath=data.get("xpath"),
+        xpath=data.get("xpath"),          # None for shadow-DOM elements (set by capture.js)
         id=data.get("id") or None,
         name=data.get("name"),
         class_name=data.get("className"),
@@ -24,6 +24,8 @@ def build_selector_from_event(data: dict) -> SelectorInfo:
         input_type=data.get("inputType"),
         outer_html_snippet=_truncate(data.get("outerHTML", ""), OUTER_HTML_MAX_LEN) or "",
         parent_html_snippet=_truncate(data.get("parentHTML"), PARENT_HTML_MAX_LEN),
+        frame_url=data.get("frameUrl") or None,
+        in_shadow_dom=bool(data.get("inShadowDom", False)),
     )
 
 

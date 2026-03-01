@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from playwright.async_api import ElementHandle, Page
+from playwright.async_api import ElementHandle, Frame, Page
 
 from sat.config import EmbeddingStrategyConfig
 from sat.core.models import RecordedAction, ResolutionMethod
@@ -47,8 +47,13 @@ class EmbeddingStrategy(ResolutionStrategy):
         if not query:
             return None, None
 
+        # Scope to iframe when the action was recorded inside one
+        root: Page | Frame = page
+        if action.selector and action.selector.frame_url:
+            root = _find_frame(page, action.selector.frame_url) or page
+
         # Extract DOM candidates
-        candidates = await self._dom.extract_candidates(page, self._config.max_candidates)
+        candidates = await self._dom.extract_candidates(root, self._config.max_candidates)
         if not candidates:
             logger.debug("EmbeddingStrategy: no interactable candidates found")
             return None, None
@@ -86,7 +91,7 @@ class EmbeddingStrategy(ResolutionStrategy):
             return None, None
 
         # Resolve the Playwright ElementHandle for this candidate by its DOM index
-        element = await self._get_element_by_index(page, candidates[best_idx]["index"])
+        element = await self._get_element_by_index(root, candidates[best_idx]["index"])
         return element, best_score
 
     # ------------------------------------------------------------------
@@ -123,7 +128,7 @@ class EmbeddingStrategy(ResolutionStrategy):
         return " | ".join(p for p in parts if p)
 
     @staticmethod
-    async def _get_element_by_index(page: Page, index: int) -> ElementHandle | None:
+    async def _get_element_by_index(page: "Page | Frame", index: int) -> ElementHandle | None:
         """Re-query the DOM to get a live ElementHandle by our captured index."""
         from sat.constants import INTERACTABLE_SELECTORS
 
@@ -154,3 +159,19 @@ class EmbeddingStrategy(ResolutionStrategy):
         except Exception as exc:
             logger.warning("Failed to get element by index %d: %s", index, exc)
             return None
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers
+# ---------------------------------------------------------------------------
+
+def _find_frame(page: Page, frame_url: str) -> Frame | None:
+    """Return the first child Frame whose URL matches *frame_url*, or None."""
+    for frame in page.frames:
+        if frame.url == frame_url:
+            return frame
+    # Looser match: one URL is a prefix of the other (handles trailing slashes, etc.)
+    for frame in page.frames:
+        if frame.url.startswith(frame_url) or frame_url.startswith(frame.url):
+            return frame
+    return None

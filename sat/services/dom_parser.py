@@ -6,14 +6,17 @@ from __future__ import annotations
 
 import json
 
-from playwright.async_api import Page
+from playwright.async_api import Frame, Page
 
 from sat.constants import INTERACTABLE_SELECTORS, OUTER_HTML_MAX_LEN, PARENT_HTML_MAX_LEN
+
+# Accept both a top-level Page and a child Frame so callers can scope to iframes.
+_PageOrFrame = Page | Frame
 
 # JS that returns all interactable elements as a JSON string.
 # The function receives three arguments injected by page.evaluate().
 _EXTRACT_JS = """
-(selectors, maxHtml, maxParent) => {
+([selectors, maxHtml, maxParent]) => {
     function truncate(s, n) {
         if (!s) return null;
         s = s.trim();
@@ -61,15 +64,13 @@ class DOMParser:
 
     async def extract_candidates(
         self,
-        page: Page,
+        page: Page | Frame,
         max_candidates: int = 50,
     ) -> list[dict]:
         """Return up to *max_candidates* visible, interactable element dicts."""
         raw: str = await page.evaluate(
             _EXTRACT_JS,
-            INTERACTABLE_SELECTORS,
-            OUTER_HTML_MAX_LEN,
-            PARENT_HTML_MAX_LEN,
+            [INTERACTABLE_SELECTORS, OUTER_HTML_MAX_LEN, PARENT_HTML_MAX_LEN],
         )
         if not raw:
             return []

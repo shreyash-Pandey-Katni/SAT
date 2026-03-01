@@ -88,8 +88,7 @@ class ActionPerformer:
         if element is None:
             raise RuntimeError("Cannot TYPE: element is None")
         value = action.value or ""
-        await element.triple_click()          # Select all existing text
-        await element.type(value)             # Type new value
+        await element.fill(value)             # Clear existing text and type new value
 
     async def _select(self, element: ElementHandle | None, action: RecordedAction) -> None:
         if element is None:

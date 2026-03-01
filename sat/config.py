@@ -26,6 +26,9 @@ class BrowserConfig:
     viewport_width: int = 1920
     viewport_height: int = 1080
     slow_mo: int = 0
+    # Optional: explicit path to Chrome/Chromium/Firefox binary.
+    # When empty and headless=False on Linux, auto-detection of system Chrome is used.
+    executable_path: str = ""
 
 
 @dataclass
@@ -134,6 +137,7 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
             viewport_width=b.get("viewport_width", 1920),
             viewport_height=b.get("viewport_height", 1080),
             slow_mo=b.get("slow_mo", 0),
+            executable_path=b.get("executable_path", ""),
         ),
         recorder=RecorderConfig(
             output_dir=r.get("output_dir", "./recordings"),
