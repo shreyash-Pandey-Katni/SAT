@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Run CNL{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Run CNL</h1>
+</div>
+<p class="meta" style="margin-bottom:1rem;">
+  Paste CNL steps below. They will be executed against a live browser and stored as a new test case.
+</p>
+
+<form id="cnl-run-form" class="form" style="max-width:700px;">
+  <label>Test Name
+    <input type="text" id="cnl-name" placeholder="My CNL Test" value="CNL Test" required/>
+  </label>
+  <label>Start URL
+    <input type="url" id="cnl-url" placeholder="https://example.com" required/>
+  </label>
+  <label>CNL Steps
+    <textarea id="cnl-input" rows="14" placeholder='# Write your CNL steps here
+Navigate to "https://example.com";
+Click "Log in" Button;
+Type "admin" in "Username" TextField;
+Type "secret" in "Password" TextField;
+Click "Submit" Button;'></textarea>
+  </label>
+  <div id="validation-result"></div>
+  <div class="form-row">
+    <button type="button" class="btn" id="validate-btn">Validate</button>
+    <button type="submit" class="btn btn-primary" id="run-btn">Run</button>
+  </div>
+</form>
+
+<div id="progress" class="log hidden">
+  <h3>Execution Progress</h3>
+  <ul id="step-list"></ul>
+</div>
+<div id="summary" class="hidden"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const form     = document.getElementById('cnl-run-form');
+const runBtn   = document.getElementById('run-btn');
+const valBtn   = document.getElementById('validate-btn');
+const valRes   = document.getElementById('validation-result');
+const progress = document.getElementById('progress');
+const stepList = document.getElementById('step-list');
+const summary  = document.getElementById('summary');
+
+/* ── Validate ─────────────────────────────────────────────── */
+valBtn.addEventListener('click', async () => {
+  const cnl = document.getElementById('cnl-input').value;
+  const r = await fetch('/api/cnl/validate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cnl})
+  });
+  const d = await r.json();
+  if (d.valid) {
+    valRes.innerHTML = '<span class="ok" style="color:#68d391;">✓ Valid CNL</span>';
+  } else {
+    valRes.innerHTML = d.errors
+      .map(e => `<div class="err" style="color:#fc8181;">Line ${e.line}: ${e.message}</div>`)
+      .join('');
+  }
+});
+
+/* ── Run ──────────────────────────────────────────────────── */
+form.addEventListener('submit', e => {
+  e.preventDefault();
+
+  const cnl      = document.getElementById('cnl-input').value.trim();
+  const startUrl = document.getElementById('cnl-url').value.trim();
+  const name     = document.getElementById('cnl-name').value.trim() || 'CNL Test';
+
+  if (!cnl || !startUrl) { alert('Please fill in all fields.'); return; }
+
+  runBtn.disabled = true;
+  runBtn.textContent = 'Running…';
+  progress.classList.remove('hidden');
+  summary.classList.add('hidden');
+  stepList.innerHTML = '';
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/run-cnl`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({cnl, start_url: startUrl, name}));
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+
+    if (msg.type === 'step') {
+      const s = msg.data;
+      const ok = s.status === 'passed';
+      const icon = ok ? '✓' : '✗';
+      const li = document.createElement('li');
+      li.className = ok ? 'pass' : 'fail';
+      li.textContent = `${icon} Step ${s.step_number} — ${s.action_type} — ${s.cnl_step || ''}`;
+      if (s.error) li.textContent += ` (${s.error})`;
+      stepList.appendChild(li);
+    }
+
+    else if (msg.type === 'done') {
+      summary.classList.remove('hidden');
+      summary.innerHTML = `
+        <div class="summary-box">
+          <span class="pass">✓ ${msg.steps} steps executed</span>
+          <span>Saved as <strong>${msg.name}</strong></span>
+          <a class="btn btn-sm" href="/tests/${msg.test_id}">View Test</a>
+          <a class="btn btn-sm btn-success" href="/tests/${msg.test_id}/execute">Execute</a>
+        </div>`;
+      runBtn.disabled = false;
+      runBtn.textContent = 'Run';
+    }
+
+    else if (msg.type === 'error') {
+      const li = document.createElement('li');
+      li.className = 'fail';
+      li.textContent = `✗ Error: ${msg.message}`;
+      stepList.appendChild(li);
+      runBtn.disabled = false;
+      runBtn.textContent = 'Run';
+    }
+  };
+
+  ws.onerror = () => {
+    const li = document.createElement('li');
+    li.className = 'fail';
+    li.textContent = '✗ WebSocket connection error';
+    stepList.appendChild(li);
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run';
+  };
+});
+</script>
+{% endblock %}

@@ -38,6 +38,33 @@ pip install -e ".[dev]"
 playwright install chromium firefox
 ```
 
+## Docker
+
+### Run SAT web UI with Docker Compose (recommended)
+
+```bash
+docker compose up --build
+```
+
+- SAT web UI: `http://localhost:8000`
+- Ollama API (from host): `http://localhost:11434`
+
+Then pull required models into Ollama:
+
+```bash
+docker exec -it sat-ollama ollama pull nomic-embed-text
+docker exec -it sat-ollama ollama pull llava:13b
+```
+
+### Run SAT container only
+
+```bash
+docker build -t sat .
+docker run --rm -p 8000:8000 -v "$(pwd)/recordings:/app/recordings" sat
+```
+
+If you run Ollama outside Compose, update `config/docker.toml` with the correct Ollama base URL.
+
 ## CLI Usage
 
 ```bash

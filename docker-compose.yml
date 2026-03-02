@@ -1,0 +1,22 @@
+services:
+  sat:
+    build: .
+    container_name: sat-app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./recordings:/app/recordings
+      - ./config:/app/config
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sat-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:

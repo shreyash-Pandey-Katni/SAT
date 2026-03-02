@@ -275,27 +275,27 @@
           <div class="product-title">IBM <strong>webMethods Integration Server</strong></div>
         </div>
       </div>
-      <form id="login-form" onsubmit="doLogin(event)">
+      <form id="auth-form" onsubmit="doLogin(event)">
         <div class="component-molecule">
           <div class="component-atom">
-            <label class="dlt-form-label" for="username">Username</label>
+            <label class="dlt-form-label" for="user-id-input">Username</label>
             <div class="dlt-form-group">
-              <input type="text" id="username" class="dlt-text-input" placeholder="Enter username" autocomplete="off" autofocus>
+              <input type="text" id="user-id-input" class="dlt-text-input" placeholder="Enter username" autocomplete="off" autofocus>
             </div>
           </div>
         </div>
         <div class="component-molecule">
           <div class="component-atom">
-            <label class="dlt-form-label" for="password">Password</label>
+            <label class="dlt-form-label" for="user-secret-input">Password</label>
             <div class="dlt-form-group">
-              <input type="password" id="password" class="dlt-text-input" placeholder="Enter password" autocomplete="off">
+              <input type="password" id="user-secret-input" class="dlt-text-input" placeholder="Enter password" autocomplete="off">
               <button type="button" class="password-show-icon" onclick="togglePassword()" title="Show password">👁</button>
             </div>
           </div>
         </div>
         <div class="component-atom" style="margin: 0 10px;">
-          <button type="submit" id="login-btn" class="dlt-button-primary">Log in</button>
-          <div id="error-msg" class="error-msg">Invalid username or password. Try: Administrator / manage</div>
+          <button type="submit" id="sign-in-button" class="dlt-button-primary">Log in</button>
+          <div id="auth-error-text" class="error-msg">Invalid username or password. Try: Administrator / manage</div>
         </div>
       </form>
       <div class="login-option-sso-divider"><span>or</span></div>
@@ -365,12 +365,12 @@
         <span class="chevron" id="pkg-chev">▼</span>
       </div>
       <div id="pkg-sub" class="sub-items"></div>
-      <div class="sidebar-item" id="solutions-item" onclick="toggleSub('sol-sub', 'sol-chev')">
+      <div class="sidebar-item" id="solutions-nav-group" onclick="toggleSub('sol-sub', 'sol-chev')">
         <span class="sidebar-icon">⚙️</span> Solutions
         <span class="chevron" id="sol-chev">▼</span>
       </div>
       <div id="sol-sub" class="sub-items">
-        <div class="sidebar-item sidebar-sub" id="cloudstreams-link" onclick="showCloudStreams()">CloudStreams</div>
+        <div class="sidebar-item sidebar-sub" id="cloudstreams-nav-item" onclick="showCloudStreams()">CloudStreams</div>
       </div>
       <div class="sidebar-item" style="color:#aaa; cursor:default;">
         <span class="sidebar-icon">🔌</span> Adapters
@@ -480,106 +480,7 @@
   </div>
 </div>
 
-<!-- ==================== CLOUDSTREAMS PAGE ==================== -->
-<div id="cloudstreams-page" class="hidden">
-  <div class="navbar">
-    <div class="navbar-brand">WEBMETHODS<span>Integration Server</span></div>
-    <div class="navbar-tabs">
-      <a class="navbar-tab active">Administration</a>
-      <a class="navbar-tab">Monitoring</a>
-    </div>
-    <div class="navbar-right">
-      <span class="instance-info">default : v1-5180914.vm.fyre.ibm.com : Administrator</span>
-      <a href="#" onclick="showDashboard()" style="color:#fff;font-size:13px;text-decoration:none;">← Back to Dashboard</a>
-    </div>
-  </div>
 
-  <div class="layout">
-    <!-- CloudStreams Sidebar -->
-    <div class="sidebar">
-      <div style="padding: 12px 16px; font-weight:600; font-size:14px; color:#333; border-bottom:1px solid #eee;">CloudStreams</div>
-      <div class="sidebar-item" onclick="toggleSub('cs-admin-sub','cs-admin-chev')">
-        <span>▼</span>&nbsp;Administration
-        <span class="chevron open" id="cs-admin-chev"></span>
-      </div>
-      <div id="cs-admin-sub" class="sub-items open">
-        <div class="sidebar-item sidebar-sub active" id="cs-general" onclick="showCSPage('general')">General</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('email')">Email</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('database')">Database</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('virtual-services')">Virtual Services</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('sts')">STS</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('service-fault')">Service Fault Configuration</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('consumers')">Consumers</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('oauth')">OAuth Tokens</div>
-      </div>
-      <div class="sidebar-item" onclick="toggleSub('cs-prov-sub','cs-prov-chev')">
-        <span>▼</span>&nbsp;Providers
-        <span class="chevron open" id="cs-prov-chev"></span>
-      </div>
-      <div id="cs-prov-sub" class="sub-items open">
-        <div class="sidebar-item sidebar-sub" style="color:#aaa;">None</div>
-      </div>
-      <div class="sidebar-item" onclick="toggleSub('cs-stream-sub','cs-stream-chev')">
-        <span>▼</span>&nbsp;Streaming
-        <span class="chevron open" id="cs-stream-chev"></span>
-      </div>
-      <div id="cs-stream-sub" class="sub-items open">
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('streaming-providers')">Providers</div>
-        <div class="sidebar-item sidebar-sub" onclick="showCSPage('streaming-subscribers')">Subscribers</div>
-      </div>
-    </div>
-
-    <!-- CloudStreams Content -->
-    <div class="main-content">
-      <div id="cs-breadcrumb" style="font-size:13px;color:#666;margin-bottom:16px;">CloudStreams > Administration > General</div>
-      <div id="cs-content">
-        <!-- General Config (default) -->
-        <div id="cs-general-content">
-          <ul style="list-style:none;margin-bottom:16px;">
-            <li><a href="#" style="color:#1776BF;" onclick="alert('Edit not available in offline mode'); return false;">Edit</a></li>
-          </ul>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-            <thead><tr><th colspan="2" style="background:#555;color:#fff;padding:8px 12px;text-align:left;">General Configuration</th></tr></thead>
-            <tbody>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;width:40%;">Target Name</td><td style="padding:8px 12px;border:1px solid #ddd;">your-target-name-here</td></tr>
-              <tr><td style="padding:8px 12px;border:1px solid #ddd;">HTTP Load Balancer URL</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;">HTTPS Load Balancer URL</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-            </tbody>
-          </table>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-            <thead><tr><th colspan="2" style="background:#555;color:#fff;padding:8px 12px;text-align:left;">Keystore Configuration</th></tr></thead>
-            <tbody>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;width:40%;">Keystore Name</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-              <tr><td style="padding:8px 12px;border:1px solid #ddd;">Signing Alias</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;">Truststore Name</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-            </tbody>
-          </table>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-            <thead><tr><th colspan="2" style="background:#555;color:#fff;padding:8px 12px;text-align:left;">Ports Configuration</th></tr></thead>
-            <tbody>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;width:40%;">HTTP Ports</td><td style="padding:8px 12px;border:1px solid #ddd;">5555</td></tr>
-              <tr><td style="padding:8px 12px;border:1px solid #ddd;">HTTPS Ports</td><td style="padding:8px 12px;border:1px solid #ddd;"></td></tr>
-            </tbody>
-          </table>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-            <thead><tr><th colspan="2" style="background:#555;color:#fff;padding:8px 12px;text-align:left;">Connection Configuration</th></tr></thead>
-            <tbody>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;width:40%;">Connection factory wire logging</td><td style="padding:8px 12px;border:1px solid #ddd;"><input type="checkbox" disabled></td></tr>
-              <tr><td style="padding:8px 12px;border:1px solid #ddd;">Lazy Asset Loading</td><td style="padding:8px 12px;border:1px solid #ddd;"><input type="checkbox" disabled></td></tr>
-            </tbody>
-          </table>
-          <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-            <thead><tr><th colspan="2" style="background:#555;color:#fff;padding:8px 12px;text-align:left;">Large Data Configuration</th></tr></thead>
-            <tbody>
-              <tr style="background:#f9f9f9;"><td style="padding:8px 12px;border:1px solid #ddd;width:40%;">Handle Binary Streams</td><td style="padding:8px 12px;border:1px solid #ddd;"><input type="checkbox" disabled></td></tr>
-              <tr><td style="padding:8px 12px;border:1px solid #ddd;">Threshold Size (bytes)</td><td style="padding:8px 12px;border:1px solid #ddd;">5242880</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
 
 <script>
   // ---- Auth ----
@@ -587,9 +488,9 @@
 
   function doLogin(e) {
     e.preventDefault();
-    const user = document.getElementById("username").value.trim();
-    const pass = document.getElementById("password").value;
-    const errEl = document.getElementById("error-msg");
+    const user = document.getElementById("user-id-input").value.trim();
+    const pass = document.getElementById("user-secret-input").value;
+    const errEl = document.getElementById("auth-error-text");
     if (VALID_USERS[user] && VALID_USERS[user] === pass) {
       errEl.style.display = "none";
       document.getElementById("login-page").classList.add("hidden");
@@ -602,7 +503,7 @@
   }
 
   function togglePassword() {
-    const p = document.getElementById("password");
+    const p = document.getElementById("user-secret-input");
     p.type = p.type === "password" ? "text" : "password";
   }
 
@@ -615,13 +516,12 @@
   }
 
   function showDashboard() {
-    document.getElementById("cloudstreams-page").classList.add("hidden");
+    // kept for compatibility
     document.getElementById("dashboard-page").classList.remove("hidden");
   }
 
   function showCloudStreams() {
-    document.getElementById("dashboard-page").classList.add("hidden");
-    document.getElementById("cloudstreams-page").classList.remove("hidden");
+    window.open("cloudstreams.html", "_blank");
   }
 
   function showTab(tab) {
@@ -646,34 +546,7 @@
     console.log("Section:", sec);
   }
 
-  function showCSPage(page) {
-    // Update breadcrumb
-    const labels = {
-      "general": "General", "email": "Email", "database": "Database",
-      "virtual-services": "Virtual Services", "sts": "STS",
-      "service-fault": "Service Fault Configuration", "consumers": "Consumers",
-      "oauth": "OAuth Tokens", "streaming-providers": "Streaming > Providers",
-      "streaming-subscribers": "Streaming > Subscribers"
-    };
-    const label = labels[page] || page;
-    document.getElementById("cs-breadcrumb").innerHTML =
-      "CloudStreams > Administration > " + label;
 
-    // Highlight active
-    document.querySelectorAll("#cloudstreams-page .sidebar-sub").forEach(s => s.classList.remove("active"));
-    event.target.classList.add("active");
-
-    // Show content
-    const content = document.getElementById("cs-content");
-    if (page === "general") {
-      document.getElementById("cs-general-content").style.display = "block";
-    } else {
-      document.getElementById("cs-general-content").style.display = "none";
-      content.innerHTML = document.getElementById("cs-general-content").outerHTML +
-        `<div style="padding:20px;color:#666;font-style:italic;">${label} — content not available in offline mode.</div>`;
-      document.getElementById("cs-general-content").style.display = "none";
-    }
-  }
 </script>
 </body>
 </html>

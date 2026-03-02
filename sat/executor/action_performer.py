@@ -49,21 +49,65 @@ class ActionPerformer:
 
             case ActionType.NEW_TAB:
                 url = action.value or ""
-                new_page = await page.context.new_page()
+                context = page.context
+
+                # A preceding CLICK may have already opened a popup
+                # (e.g. target="_blank").  Detect it by comparing the
+                # real context pages against the tracked list from the
+                # executor (which only contains explicitly-created pages).
+                tracked_ids = set(id(p) for p in (all_pages or []))
+                untracked = [
+                    p for p in context.pages
+                    if id(p) not in tracked_ids and not p.is_closed()
+                ]
+
+                if untracked:
+                    popup = untracked[-1]
+                    try:
+                        await popup.wait_for_load_state(
+                            "domcontentloaded", timeout=5000,
+                        )
+                    except Exception:
+                        pass
+                    return popup
+
+                # No popup detected — create a new page explicitly
+                new_page = await context.new_page()
                 if url and url != "about:blank":
                     await new_page.goto(url, wait_until="domcontentloaded")
                 return new_page
 
             case ActionType.SWITCH_TAB:
-                if all_pages:
-                    target_url = action.value or ""
-                    target_title = (action.metadata or {}).get("title", "")
-                    found = await self._switch_tab(page, all_pages, target_url, target_title)
-                    if found is not None:
-                        return found
+                target_url = action.value or ""
+                target_title = (action.metadata or {}).get("title", "")
+
+                # If the current page already matches the target, no-op.
+                # This avoids an accidental switch when NEW_TAB already
+                # adopted the popup and moved focus there.
+                cur_url = page.url or ""
+                if target_url and target_url in cur_url:
+                    return None
+                try:
+                    cur_title = await page.title()
+                except Exception:
+                    cur_title = ""
+                if target_title and target_title in cur_title:
+                    return None
+
+                # Search ALL context pages (includes browser-opened popups)
+                real_pages = list(page.context.pages)
+                found = await self._switch_tab(
+                    page, real_pages, target_url, target_title,
+                )
+                if found is not None:
+                    return found
 
             case ActionType.CLOSE_TAB:
-                remaining = [p for p in (all_pages or []) if p != page]
+                # Use real context pages so browser-opened popups are included
+                remaining = [
+                    p for p in page.context.pages
+                    if p != page and not p.is_closed()
+                ]
                 await page.close()
                 if remaining:
                     await remaining[-1].bring_to_front()

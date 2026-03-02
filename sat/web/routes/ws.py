@@ -119,3 +119,64 @@ async def ws_execute(websocket: WebSocket, test_id: str):
         await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
     finally:
         await websocket.close()
+
+
+@router.websocket("/ws/run-cnl")
+async def ws_run_cnl(websocket: WebSocket):
+    """Run raw CNL text against a live browser, stream progress, store as test.
+
+    Expects first message: ``{"cnl": "...", "start_url": "...", "name": "..."}``
+    Streams: ``{"type": "step", "data": {...}}`` then ``{"type": "done", ...}``
+    """
+    from sat.config import load_config
+    from sat.executor.cnl_runner import CNLRunner
+    from sat.storage.test_store import TestStore
+
+    await websocket.accept()
+
+    try:
+        init_msg = await websocket.receive_text()
+        params = json.loads(init_msg)
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
+    cnl_text: str = params.get("cnl", "")
+    start_url: str = params.get("start_url", "")
+    name: str = params.get("name", "CNL Test")
+
+    if not cnl_text or not start_url:
+        await websocket.send_text(
+            json.dumps({"type": "error", "message": "Both 'cnl' and 'start_url' are required."})
+        )
+        await websocket.close()
+        return
+
+    cfg = load_config()
+    runner = CNLRunner(cfg)
+
+    async def _on_step(data: dict):
+        try:
+            await websocket.send_text(json.dumps({"type": "step", "data": data}))
+        except Exception:
+            pass
+
+    runner.on_step(_on_step)
+
+    try:
+        test = await runner.run(cnl_text, start_url, name=name)
+
+        # Persist the new test
+        store = TestStore(cfg.recorder.output_dir)
+        store.save_test(test)
+
+        await websocket.send_text(json.dumps({
+            "type": "done",
+            "test_id": test.id,
+            "steps": len(test.actions),
+            "name": test.name,
+        }))
+    except Exception as exc:
+        await websocket.send_text(json.dumps({"type": "error", "message": str(exc)}))
+    finally:
+        await websocket.close()

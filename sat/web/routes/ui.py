@@ -37,6 +37,11 @@ async def execute_page(test_id: str, request: Request):
     return _t(request).TemplateResponse("execute.html", {"request": request, "test_id": test_id})
 
 
+@router.get("/run-cnl", response_class=HTMLResponse)
+async def run_cnl_page(request: Request):
+    return _t(request).TemplateResponse("run_cnl.html", {"request": request})
+
+
 @router.get("/tests/{test_id}/reports/{report_id}", response_class=HTMLResponse)
 async def report_page(test_id: str, report_id: str, request: Request):
     return _t(request).TemplateResponse(

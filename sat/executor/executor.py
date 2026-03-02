@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
-from playwright.async_api import ElementHandle, Page
+from playwright.async_api import Page
 
 from sat.config import SATConfig
 from sat.core.models import (
@@ -150,6 +150,13 @@ class Executor:
             except Exception as exc:
                 return self._fail(action, str(exc), start_ms)
 
+        # ── Ensure we are on the correct page for this action ────────────
+        # Recording order may differ from execution order (e.g. a click
+        # that opens a popup records NEW_TAB/SWITCH_TAB *before* the
+        # CLICK itself because context.on("page") fires asynchronously).
+        # Compare action.url to the current page and switch if needed.
+        page = await self._ensure_correct_page(page, action)
+
         # ── Element actions: resolve → perform → heal ────────────────────
         element, method, score = await self._strategy_chain.resolve_element(page, action)
 
@@ -192,6 +199,49 @@ class Executor:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    async def _ensure_correct_page(self, page: Page, action: RecordedAction) -> Page:
+        """Return the context page whose URL matches ``action.url``.
+
+        During recording, async events (e.g. ``context.on("page")``) may
+        cause NEW_TAB / SWITCH_TAB to be recorded *before* the CLICK that
+        triggered them.  When the executor replays in order, ``_active_page``
+        may point to the *new* tab while the next CLICK still belongs to the
+        *original* tab.
+
+        This method detects the mismatch and transparently brings the
+        correct page to the front so element resolution succeeds.
+        """
+        action_url = action.url or ""
+        if not action_url:
+            return page
+
+        # Fast path — current page already matches
+        cur_url = page.url or ""
+        if action_url in cur_url or cur_url in action_url:
+            return page
+
+        # Search all live context pages for one with a matching URL
+        for p in page.context.pages:
+            if p.is_closed():
+                continue
+            p_url = p.url or ""
+            if action_url in p_url or p_url in action_url:
+                logger.info(
+                    "[step %d] Page mismatch — switching from %r to %r for action",
+                    action.step_number, cur_url, p_url,
+                )
+                await p.bring_to_front()
+                self._active_page = p
+                return p
+
+        # No match found — stay on the current page (best effort)
+        logger.warning(
+            "[step %d] Could not find a page matching url=%r; "
+            "staying on current page %r",
+            action.step_number, action_url, cur_url,
+        )
+        return page
 
     async def _wait_stable(self, page: Page) -> None:
         mode = self._config.executor.wait_after_action
