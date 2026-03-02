@@ -70,6 +70,13 @@ class SelectorStrategy(ResolutionStrategy):
                 else:
                     locator = root.locator(str(locator_expr))
 
+                # Fast pre-check: skip locators that match zero DOM elements.
+                # This avoids burning the full timeout (e.g. 5 000 ms) on stale
+                # selectors such as old IDs after a UI change.
+                if await locator.count() == 0:
+                    logger.debug("Selector skip (0 matches): %s", locator_expr)
+                    continue
+
                 await locator.wait_for(state="visible", timeout=self._timeout)
                 count = await locator.count()
                 if count == 1:

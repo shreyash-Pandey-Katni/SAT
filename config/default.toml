@@ -9,6 +9,7 @@ slow_mo = 0                # ms between playwright actions (0 = fastest)
 output_dir = "./recordings"
 capture_screenshots = true
 screenshot_format = "png"
+max_reports_per_test = 50            # 0 disables pruning, keep only latest N reports per test
 debounce_click_ms = 200
 debounce_typing_ms = 500
 capture_dom_snapshot = true

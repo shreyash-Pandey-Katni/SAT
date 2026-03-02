@@ -21,7 +21,11 @@ class CNLValidateBody(BaseModel):
 
 @router.get("/recordings/{test_id}/cnl")
 async def get_cnl(test_id: str, request: Request):
-    store = TestStore(request.app.state.cfg.recorder.output_dir)
+    cfg = request.app.state.cfg
+    store = TestStore(
+        cfg.recorder.output_dir,
+        max_reports_per_test=cfg.recorder.max_reports_per_test,
+    )
     try:
         test = store.get_test(test_id)
     except FileNotFoundError:
@@ -31,7 +35,11 @@ async def get_cnl(test_id: str, request: Request):
 
 @router.post("/recordings/{test_id}/cnl")
 async def update_cnl(test_id: str, body: CNLUpdateBody, request: Request):
-    store = TestStore(request.app.state.cfg.recorder.output_dir)
+    cfg = request.app.state.cfg
+    store = TestStore(
+        cfg.recorder.output_dir,
+        max_reports_per_test=cfg.recorder.max_reports_per_test,
+    )
     try:
         test = store.update_cnl(test_id, body.cnl)
     except FileNotFoundError:

@@ -10,9 +10,13 @@
 <script>
 const testId = '{{ test_id }}';
 (async () => {
-  const res = await fetch(`/api/recordings/${testId}`);
+  const [res, reportRes] = await Promise.all([
+    fetch(`/api/recordings/${testId}`),
+    fetch(`/api/recordings/${testId}/reports`),
+  ]);
   if (!res.ok) { document.getElementById('test-detail').textContent = 'Not found.'; return; }
   const t = await res.json();
+  const reports = reportRes.ok ? await reportRes.json() : [];
   const el = document.getElementById('test-detail');
   el.innerHTML = `
     <div class="page-header">
@@ -38,6 +42,25 @@ const testId = '{{ test_id }}';
           </tr>`).join('')}
       </tbody>
     </table>
+    <h3>Reports (${reports.length})</h3>
+    ${reports.length === 0 ? '<p class="empty">No execution reports yet.</p>' : `
+      <table class="table">
+        <thead><tr><th>Executed</th><th>Status</th><th>Passed</th><th>Failed</th><th>Healed</th><th>Duration</th><th></th></tr></thead>
+        <tbody>
+          ${reports.map(r => `
+            <tr class="${r.status === 'failed' ? 'failed' : r.status === 'passed' ? 'passed' : ''}">
+              <td>${new Date(r.executed_at).toLocaleString()}</td>
+              <td>${r.status}</td>
+              <td>${r.passed}</td>
+              <td>${r.failed}</td>
+              <td>${r.healed_steps}</td>
+              <td>${r.duration_s.toFixed(2)}s</td>
+              <td><a class="btn btn-sm" href="/tests/${t.id}/reports/${r.id}">View</a></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `}
   `;
 })();
 </script>

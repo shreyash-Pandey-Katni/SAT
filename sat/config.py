@@ -37,6 +37,7 @@ class RecorderConfig:
     output_dir: str = "./recordings"
     capture_screenshots: bool = True
     screenshot_format: str = "png"
+    max_reports_per_test: int = 50
     debounce_click_ms: int = 200
     debounce_typing_ms: int = 500
     capture_dom_snapshot: bool = True
@@ -144,6 +145,7 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
             output_dir=r.get("output_dir", "./recordings"),
             capture_screenshots=r.get("capture_screenshots", True),
             screenshot_format=r.get("screenshot_format", "png"),
+            max_reports_per_test=r.get("max_reports_per_test", 50),
             debounce_click_ms=r.get("debounce_click_ms", 200),
             debounce_typing_ms=r.get("debounce_typing_ms", 500),
             capture_dom_snapshot=r.get("capture_dom_snapshot", True),

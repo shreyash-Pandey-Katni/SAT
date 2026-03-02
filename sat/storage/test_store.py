@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sat.core.models import ExecutionReport, RecordedTest
@@ -25,6 +26,15 @@ def _safe_replace(src: str, dst: str | Path, retries: int = 3) -> None:
                 raise
 
 
+def _to_utc_timestamp(value: datetime) -> float:
+    """Normalize naive/aware datetimes to a UTC timestamp for stable sorting."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    else:
+        value = value.astimezone(UTC)
+    return value.timestamp()
+
+
 class TestStore:
     """Manages the recordings directory structure.
 
@@ -40,9 +50,14 @@ class TestStore:
                 exec_screenshots/   ← executor screenshots
     """
 
-    def __init__(self, recordings_dir: str | Path) -> None:
+    def __init__(
+        self,
+        recordings_dir: str | Path,
+        max_reports_per_test: int | None = None,
+    ) -> None:
         self._root = Path(recordings_dir)
         self._root.mkdir(parents=True, exist_ok=True)
+        self._max_reports_per_test = max_reports_per_test
 
     # ------------------------------------------------------------------
     # RecordedTest CRUD
@@ -60,7 +75,7 @@ class TestStore:
                     tests.append(self._load_test(test_file))
                 except Exception:
                     pass
-        tests.sort(key=lambda t: t.created_at, reverse=True)
+        tests.sort(key=lambda t: _to_utc_timestamp(t.created_at), reverse=True)
         return tests
 
     def get_test(self, test_id: str) -> RecordedTest:
@@ -113,7 +128,7 @@ class TestStore:
                 reports.append(ExecutionReport.model_validate(data))
             except Exception:
                 pass
-        reports.sort(key=lambda r: r.executed_at, reverse=True)
+        reports.sort(key=lambda r: _to_utc_timestamp(r.executed_at), reverse=True)
         return reports
 
     def get_report(self, test_id: str, report_id: str) -> ExecutionReport:
@@ -130,7 +145,28 @@ class TestStore:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         tmp.replace(path)
+        self._prune_reports(report.test_id)
         return path
+
+    def _prune_reports(self, test_id: str) -> None:
+        """Prune old report files based on configured retention."""
+        if not self._max_reports_per_test or self._max_reports_per_test <= 0:
+            return
+
+        reports_dir = self._root / test_id / "reports"
+        if not reports_dir.exists():
+            return
+
+        report_files = sorted(
+            reports_dir.glob("*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for old_report in report_files[self._max_reports_per_test:]:
+            try:
+                old_report.unlink()
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # CNL update

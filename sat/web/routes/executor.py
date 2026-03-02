@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import copy
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -22,8 +22,11 @@ class ExecuteRequest(BaseModel):
 
 @router.post("/execute/{test_id}")
 async def execute_test(test_id: str, body: ExecuteRequest, request: Request):
-    cfg = request.app.state.cfg
-    store = TestStore(cfg.recorder.output_dir)
+    base_cfg = request.app.state.cfg
+    store = TestStore(
+        base_cfg.recorder.output_dir,
+        max_reports_per_test=base_cfg.recorder.max_reports_per_test,
+    )
 
     try:
         test = store.get_test(test_id)
@@ -31,6 +34,8 @@ async def execute_test(test_id: str, body: ExecuteRequest, request: Request):
         raise HTTPException(status_code=404, detail="Test not found")
 
     # Apply request overrides
+    cfg = copy.deepcopy(base_cfg)
+
     if body.browser:
         cfg.browser.type = body.browser
     if body.strategies:

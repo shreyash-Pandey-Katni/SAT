@@ -35,7 +35,10 @@ def _load_config(config_path: Optional[str]):
 
 def _get_store(config):
     from sat.storage.test_store import TestStore
-    return TestStore(config.recorder.output_dir)
+    return TestStore(
+        config.recorder.output_dir,
+        max_reports_per_test=config.recorder.max_reports_per_test,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +134,10 @@ def execute(
         test = RecordedTest.model_validate(data)
     else:
         # Treat as test_id
-        store = TestStore(cfg.recorder.output_dir)
+        store = TestStore(
+            cfg.recorder.output_dir,
+            max_reports_per_test=cfg.recorder.max_reports_per_test,
+        )
         test = store.get_test(test_path)
 
     async def _on_step(result):

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
@@ -81,7 +81,7 @@ class Executor:
         page = await manager.start(url=test.start_url)
         self._active_page: Page = page         # tracks focus across tab actions
 
-        started_at = datetime.utcnow()
+        started_at = datetime.now(UTC)
         step_results: list[ExecutionStepResult] = []
 
         for action in test.actions:
@@ -103,7 +103,14 @@ class Executor:
 
         await manager.stop()
 
-        report = self._reporter.build(test.id, test.name, step_results, started_at)
+        report = self._reporter.build(
+            config=self._config,
+            test_id=test.id,
+            test_name=test.name,
+            start_url=test.start_url,
+            steps=step_results,
+            started_at=started_at,
+        )
         report_path = self._reporter.save(report, reports_dir)
         logger.info(
             "Execution complete — passed=%d failed=%d healed=%d  report=%s",
@@ -131,6 +138,8 @@ class Executor:
             action.step_number, len(test.actions), action.action_type.value, action.url,
         )
 
+        expected_url = action.url or None
+
         # ── Tab / nav actions don't need element resolution ──────────────
         if action.action_type in (
             ActionType.NAVIGATE,
@@ -146,9 +155,23 @@ class Executor:
                     self._active_page = new_page
                     page = new_page
                 await self._wait_stable(page)
-                return self._ok(action, ResolutionMethod.NONE, None, False, start_ms)
+                return self._ok(
+                    action,
+                    ResolutionMethod.NONE,
+                    None,
+                    False,
+                    start_ms,
+                    expected_url=expected_url,
+                    actual_url=page.url,
+                )
             except Exception as exc:
-                return self._fail(action, str(exc), start_ms)
+                return self._fail(
+                    action,
+                    str(exc),
+                    start_ms,
+                    expected_url=expected_url,
+                    actual_url=page.url,
+                )
 
         # ── Ensure we are on the correct page for this action ────────────
         # Recording order may differ from execution order (e.g. a click
@@ -158,7 +181,7 @@ class Executor:
         page = await self._ensure_correct_page(page, action)
 
         # ── Element actions: resolve → perform → heal ────────────────────
-        element, method, score = await self._strategy_chain.resolve_element(page, action)
+        element, method, score, resolution_trace = await self._strategy_chain.resolve_element_with_trace(page, action)
 
         if element is None:
             return self._fail(
@@ -166,6 +189,9 @@ class Executor:
                 "Element not found — all strategies exhausted",
                 start_ms,
                 resolution_method=ResolutionMethod.NONE,
+                expected_url=expected_url,
+                actual_url=page.url,
+                resolution_trace=resolution_trace,
             )
 
         # Perform the action
@@ -173,7 +199,15 @@ class Executor:
             await self._performer.perform(page, element, action, all_pages)
             await self._wait_stable(page)
         except Exception as exc:
-            return self._fail(action, str(exc), start_ms, resolution_method=method)
+            return self._fail(
+                action,
+                str(exc),
+                start_ms,
+                resolution_method=method,
+                expected_url=expected_url,
+                actual_url=page.url,
+                resolution_trace=resolution_trace,
+            )
 
         # Auto-heal if we used a fallback strategy
         healed = False
@@ -188,9 +222,13 @@ class Executor:
         return ExecutionStepResult(
             step_number=action.step_number,
             action=action,
+            cnl_step=action.cnl_step,
             result=StepResult.PASSED,
             resolution_method=method,
             similarity_score=score,
+            expected_url=expected_url,
+            actual_url=page.url,
+            resolution_trace=resolution_trace,
             duration_ms=int(time.monotonic() * 1000 - start_ms),
             screenshot_path=scr_path,
             healed=healed,
@@ -272,13 +310,20 @@ class Executor:
         healed: bool,
         start_ms: float,
         screenshot_path: str | None = None,
+        expected_url: str | None = None,
+        actual_url: str | None = None,
+        resolution_trace: list[ExecutionStepResult.ResolutionAttempt] | None = None,
     ) -> ExecutionStepResult:
         return ExecutionStepResult(
             step_number=action.step_number,
             action=action,
+            cnl_step=action.cnl_step,
             result=StepResult.PASSED,
             resolution_method=method,
             similarity_score=score,
+            expected_url=expected_url,
+            actual_url=actual_url,
+            resolution_trace=resolution_trace or [],
             duration_ms=int(time.monotonic() * 1000 - start_ms),
             screenshot_path=screenshot_path,
             healed=healed,
@@ -290,6 +335,9 @@ class Executor:
         error: str,
         start_ms: float,
         resolution_method: ResolutionMethod = ResolutionMethod.NONE,
+        expected_url: str | None = None,
+        actual_url: str | None = None,
+        resolution_trace: list[ExecutionStepResult.ResolutionAttempt] | None = None,
     ) -> ExecutionStepResult:
         logger.error(
             "[step %d] FAILED — %s", action.step_number, error
@@ -297,8 +345,12 @@ class Executor:
         return ExecutionStepResult(
             step_number=action.step_number,
             action=action,
+            cnl_step=action.cnl_step,
             result=StepResult.FAILED,
             resolution_method=resolution_method,
+            expected_url=expected_url,
+            actual_url=actual_url,
+            resolution_trace=resolution_trace or [],
             error=error,
             duration_ms=int(time.monotonic() * 1000 - start_ms),
         )

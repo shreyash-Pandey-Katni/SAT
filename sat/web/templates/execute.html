@@ -44,7 +44,7 @@ document.getElementById('exec-form').addEventListener('submit', async e => {
   const ws = new WebSocket(`${proto}://${location.host}/ws/execute/${testId}`);
 
   ws.onopen = () => {
-    // Options are sent in the URL / pre-configured; execution starts immediately
+    ws.send(JSON.stringify({browser, strategies, auto_heal: autoHeal}));
   };
 
   ws.onmessage = ev => {

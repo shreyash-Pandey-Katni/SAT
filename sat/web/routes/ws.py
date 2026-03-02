@@ -79,6 +79,8 @@ async def ws_record(websocket: WebSocket):
 @router.websocket("/ws/execute/{test_id}")
 async def ws_execute(websocket: WebSocket, test_id: str):
     """
+    Expects first message: JSON with optional overrides
+    ``{"browser": "...", "strategies": [...], "auto_heal": bool}``
     Streams JSON step results: {"type": "step", "data": {...}} or {"type": "done", ...}
     """
     from sat.config import load_config
@@ -87,7 +89,23 @@ async def ws_execute(websocket: WebSocket, test_id: str):
 
     await websocket.accept()
 
+    # ── Read optional config overrides from the client ────────────────
+    try:
+        init_msg = await websocket.receive_text()
+        params = json.loads(init_msg)
+    except Exception:
+        params = {}
+
     cfg = load_config()
+
+    # Apply overrides sent by the Web UI
+    if params.get("browser"):
+        cfg.browser.type = params["browser"]
+    if params.get("strategies"):
+        cfg.executor.strategies = params["strategies"]
+    if "auto_heal" in params:
+        cfg.executor.auto_heal = params["auto_heal"]
+
     store = TestStore(cfg.recorder.output_dir)
 
     try:

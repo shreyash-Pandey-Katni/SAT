@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +41,12 @@ class ResolutionMethod(str, Enum):
     EMBEDDING = "embedding"
     VLM = "vlm"
     NONE = "none"
+
+
+class ExecutionStatus(str, Enum):
+    PASSED = "passed"
+    FAILED = "failed"
+    PARTIAL = "partial"
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +82,7 @@ class SelectorInfo(BaseModel):
 
 
 class HealRecord(BaseModel):
-    healed_at: datetime = Field(default_factory=datetime.utcnow)
+    healed_at: datetime = Field(default_factory=_utc_now)
     healed_by: str                           # "embedding" | "vlm"
     similarity_score: float | None = None
     previous_selector: SelectorInfo
@@ -100,7 +110,7 @@ class CNLStep(BaseModel):
 
 class RecordedAction(BaseModel):
     step_number: int
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_utc_now)
     action_type: ActionType
     url: str
     tab_id: str
@@ -127,7 +137,7 @@ class RecordedTest(BaseModel):
     id: str
     name: str
     description: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now)
     start_url: str
     browser: str = "chromium"
     actions: list[RecordedAction] = Field(default_factory=list)
@@ -143,11 +153,22 @@ class RecordedTest(BaseModel):
 
 
 class ExecutionStepResult(BaseModel):
+    class ResolutionAttempt(BaseModel):
+        strategy: ResolutionMethod
+        success: bool
+        score: float | None = None
+        error: str | None = None
+        duration_ms: int
+
     step_number: int
     action: RecordedAction
+    cnl_step: str | None = None
     result: StepResult
     resolution_method: ResolutionMethod | None = None
     similarity_score: float | None = None
+    expected_url: str | None = None
+    actual_url: str | None = None
+    resolution_trace: list[ResolutionAttempt] = Field(default_factory=list)
     error: str | None = None
     duration_ms: int
     screenshot_path: str | None = None
@@ -155,10 +176,22 @@ class ExecutionStepResult(BaseModel):
 
 
 class ExecutionReport(BaseModel):
+    class ExecutionEnvironment(BaseModel):
+        browser: str
+        headless: bool
+        viewport: dict[str, int]
+        strategies: list[str] = Field(default_factory=list)
+        auto_heal: bool
+        os: str
+        sat_version: str
+
     id: str
     test_id: str
     test_name: str
-    executed_at: datetime = Field(default_factory=datetime.utcnow)
+    executed_at: datetime = Field(default_factory=_utc_now)
+    ended_at: datetime | None = None
+    status: ExecutionStatus = ExecutionStatus.PASSED
+    start_url: str | None = None
     total_steps: int
     passed: int
     failed: int
@@ -166,3 +199,5 @@ class ExecutionReport(BaseModel):
     duration_s: float
     steps: list[ExecutionStepResult] = Field(default_factory=list)
     healed_steps: int = 0
+    resolution_summary: dict[str, int] = Field(default_factory=dict)
+    environment: ExecutionEnvironment | None = None

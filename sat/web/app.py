@@ -25,6 +25,10 @@ def create_app(cfg: SATConfig) -> FastAPI:
     if _STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+    recordings_dir = Path(cfg.recorder.output_dir)
+    recordings_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/recordings", StaticFiles(directory=str(recordings_dir)), name="recordings")
+
     # Routers
     from sat.web.routes.recordings import router as rec_router
     from sat.web.routes.executor import router as ex_router

@@ -10,40 +10,306 @@
 <script>
 const testId = '{{ test_id }}';
 const reportId = '{{ report_id }}';
+
+const strategyColor = {
+  selector: 'strategy-selector',
+  embedding: 'strategy-embedding',
+  vlm: 'strategy-vlm',
+  none: 'strategy-none',
+};
+
+function normalizeArtifactPath(path) {
+  if (!path) return null;
+  const marker = '/recordings/';
+  const markerIdx = path.lastIndexOf(marker);
+  if (markerIdx >= 0) {
+    return path.slice(markerIdx);
+  }
+  if (path.startsWith('recordings/')) {
+    return `/${path}`;
+  }
+  return null;
+}
+
+function toBadgeClass(result) {
+  if (result === 'passed') return 'badge-pass';
+  if (result === 'failed') return 'badge-fail';
+  return 'badge-skip';
+}
+
+function renderTrace(trace) {
+  if (!trace || trace.length === 0) {
+    return '<div class="trace-empty">No strategy attempts recorded.</div>';
+  }
+
+  return `
+    <div class="trace-list">
+      ${trace.map(attempt => `
+        <div class="trace-item ${attempt.success ? 'ok' : 'no'}">
+          <span class="trace-strategy ${strategyColor[attempt.strategy] || 'strategy-none'}">${attempt.strategy}</span>
+          <span>${attempt.success ? 'hit' : 'miss'}</span>
+          <span>${attempt.duration_ms}ms</span>
+          <span>${attempt.score != null ? attempt.score.toFixed(3) : '—'}</span>
+          <span class="trace-error">${attempt.error || ''}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 (async () => {
   const res = await fetch(`/api/recordings/${testId}/reports/${reportId}`);
   if (!res.ok) { document.getElementById('report-container').textContent = 'Not found.'; return; }
   const r = await res.json();
+  const steps = r.steps || [];
+  const stepCards = steps.map(s => {
+    const screenshotUrl = normalizeArtifactPath(s.screenshot_path);
+    const strategy = s.resolution_method || 'none';
+    return `
+      <article class="report-step ${s.result}">
+        <header class="report-step-head">
+          <div class="step-main">
+            <strong>Step ${s.step_number}</strong>
+            <span class="badge ${toBadgeClass(s.result)}">${s.result}</span>
+            <span class="strategy-pill ${strategyColor[strategy] || 'strategy-none'}">${strategy}</span>
+            ${s.healed ? '<span class="heal-pill">healed</span>' : ''}
+          </div>
+          <div class="step-metrics">
+            <span>${s.duration_ms}ms</span>
+            <span>score: ${s.similarity_score != null ? s.similarity_score.toFixed(3) : '—'}</span>
+          </div>
+        </header>
+
+        <div class="step-grid">
+          <div>
+            <div class="kv"><span>CNL</span><span>${s.cnl_step || '—'}</span></div>
+            <div class="kv"><span>Action</span><span>${s.action?.action_type || '—'}</span></div>
+            <div class="kv"><span>Expected URL</span><span>${s.expected_url || '—'}</span></div>
+            <div class="kv"><span>Actual URL</span><span>${s.actual_url || '—'}</span></div>
+            <div class="kv"><span>Error</span><span class="err-cell">${s.error || '—'}</span></div>
+          </div>
+          <div>
+            ${screenshotUrl ? `<a href="${screenshotUrl}" target="_blank" rel="noopener"><img class="step-shot" src="${screenshotUrl}" alt="Step ${s.step_number} screenshot"></a>` : '<div class="step-shot-empty">No screenshot</div>'}
+          </div>
+        </div>
+
+        <details class="trace-details">
+          <summary>Resolution trace (${(s.resolution_trace || []).length})</summary>
+          ${renderTrace(s.resolution_trace || [])}
+        </details>
+      </article>
+    `;
+  }).join('');
+
   const el = document.getElementById('report-container');
   el.innerHTML = `
     <div class="page-header">
       <h1>Report — ${r.test_name}</h1>
-      <a class="btn btn-sm" href="/tests/${testId}">← Back</a>
+      <div class="header-actions">
+        <a class="btn btn-sm" href="/api/recordings/${testId}/reports/${reportId}/export/junit.xml">Export JUnit XML</a>
+        <a class="btn btn-sm" href="/tests/${testId}">← Back</a>
+      </div>
     </div>
     <div class="summary-box">
+      <span class="status-pill ${r.status === 'passed' ? 'status-pass' : r.status === 'failed' ? 'status-fail' : 'status-partial'}">${r.status}</span>
       <span class="pass">✓ ${r.passed} passed</span>
       <span class="fail">✗ ${r.failed} failed</span>
+      <span>↷ ${r.skipped} skipped</span>
       <span class="heal">⚕ ${r.healed_steps} healed</span>
       <span>${r.duration_s.toFixed(2)}s</span>
     </div>
-    <h3>Steps</h3>
-    <table class="table">
-      <thead><tr><th>#</th><th>Type</th><th>Result</th><th>Strategy</th><th>Similarity</th><th>Healed</th><th>ms</th><th>Error</th></tr></thead>
-      <tbody>
-        ${r.steps.map(s => `
-          <tr class="${s.result}">
-            <td>${s.step_number}</td>
-            <td><code>${s.action?.action_type || ''}</code></td>
-            <td>${s.result}</td>
-            <td>${s.resolution_method || '—'}</td>
-            <td>${s.similarity_score != null ? s.similarity_score.toFixed(3) : '—'}</td>
-            <td>${s.healed ? '✓' : '—'}</td>
-            <td>${s.duration_ms}</td>
-            <td class="err-cell">${s.error || ''}</td>
-          </tr>`).join('')}
-      </tbody>
-    </table>
+
+    <section class="report-meta">
+      <div class="kv"><span>Start URL</span><span>${r.start_url || '—'}</span></div>
+      <div class="kv"><span>Executed At</span><span>${new Date(r.executed_at).toLocaleString()}</span></div>
+      <div class="kv"><span>Ended At</span><span>${r.ended_at ? new Date(r.ended_at).toLocaleString() : '—'}</span></div>
+      <div class="kv"><span>Browser</span><span>${r.environment?.browser || '—'} (${r.environment?.headless ? 'headless' : 'headed'})</span></div>
+      <div class="kv"><span>Viewport</span><span>${r.environment?.viewport ? `${r.environment.viewport.width}×${r.environment.viewport.height}` : '—'}</span></div>
+      <div class="kv"><span>Strategies</span><span>${(r.environment?.strategies || []).join(', ') || '—'}</span></div>
+      <div class="kv"><span>Resolution Summary</span><span>selector ${r.resolution_summary?.selector || 0} · embedding ${r.resolution_summary?.embedding || 0} · vlm ${r.resolution_summary?.vlm || 0} · none ${r.resolution_summary?.none || 0}</span></div>
+      <div class="kv"><span>Runtime</span><span>${r.environment?.os || '—'} · SAT ${r.environment?.sat_version || '—'}</span></div>
+    </section>
+
+    <section class="report-controls">
+      <label>Result
+        <select id="filter-result">
+          <option value="all">All</option>
+          <option value="passed">Passed</option>
+          <option value="failed">Failed</option>
+        </select>
+      </label>
+      <label>Healed
+        <select id="filter-healed">
+          <option value="all">All</option>
+          <option value="healed">Healed only</option>
+        </select>
+      </label>
+      <label>Strategy
+        <select id="filter-strategy">
+          <option value="all">All</option>
+          <option value="selector">Selector</option>
+          <option value="embedding">Embedding</option>
+          <option value="vlm">VLM</option>
+          <option value="none">None</option>
+        </select>
+      </label>
+      <label>Sort
+        <select id="filter-sort">
+          <option value="step">Step #</option>
+          <option value="duration">Duration (desc)</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="compare-controls">
+      <label>Compare with previous run
+        <select id="compare-baseline">
+          <option value="">Select baseline report</option>
+        </select>
+      </label>
+      <button id="compare-run" class="btn btn-sm">Compare</button>
+      <div id="compare-summary" class="compare-summary hidden"></div>
+      <div id="compare-table" class="compare-table hidden"></div>
+    </section>
+
+    <section id="step-cards" class="report-steps">${stepCards || '<p class="empty">No steps in report.</p>'}</section>
   `;
+
+  async function loadComparisonCandidates() {
+    const listRes = await fetch(`/api/recordings/${testId}/reports`);
+    if (!listRes.ok) return;
+    const reports = await listRes.json();
+    const baselineSelect = document.getElementById('compare-baseline');
+    reports
+      .filter(item => item.id !== reportId)
+      .forEach(item => {
+        const opt = document.createElement('option');
+        opt.value = item.id;
+        const when = item.executed_at ? new Date(item.executed_at).toLocaleString() : item.id;
+        opt.textContent = `${when} · ${item.status}`;
+        baselineSelect.appendChild(opt);
+      });
+  }
+
+  async function runComparison() {
+    const baselineId = document.getElementById('compare-baseline').value;
+    if (!baselineId) return;
+    const compareRes = await fetch(`/api/recordings/${testId}/reports/${reportId}/compare/${baselineId}`);
+    if (!compareRes.ok) return;
+    const data = await compareRes.json();
+
+    const summaryEl = document.getElementById('compare-summary');
+    summaryEl.classList.remove('hidden');
+    summaryEl.innerHTML = `
+      <span>Compared: ${new Date(data.current_report.executed_at).toLocaleString()}</span>
+      <span>Baseline: ${new Date(data.baseline_report.executed_at).toLocaleString()}</span>
+      <span class="pass">improved ${data.summary.improved_steps}</span>
+      <span class="fail">regressed ${data.summary.regressed_steps}</span>
+      <span>unchanged ${data.summary.unchanged_steps}</span>
+      <span>Δ ${data.summary.duration_delta_s}s</span>
+    `;
+
+    const tableEl = document.getElementById('compare-table');
+    tableEl.classList.remove('hidden');
+    tableEl.innerHTML = `
+      <table class="table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Delta</th>
+            <th>Result</th>
+            <th>Strategy</th>
+            <th>Duration Δ</th>
+            <th>CNL</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${data.steps
+            .filter(item => item.delta_type !== 'unchanged')
+            .map(item => `
+              <tr class="${item.delta_type === 'regressed' ? 'failed' : item.delta_type === 'improved' ? 'passed' : ''}">
+                <td>${item.step_number}</td>
+                <td>${item.delta_type}</td>
+                <td>${item.from_result || '—'} → ${item.to_result || '—'}</td>
+                <td>${item.from_strategy || '—'} → ${item.to_strategy || '—'}</td>
+                <td>${item.duration_delta_ms == null ? '—' : `${item.duration_delta_ms}ms`}</td>
+                <td>${item.cnl_step || '—'}</td>
+              </tr>
+            `)
+            .join('') || '<tr><td colspan="6">No differences detected.</td></tr>'}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function applyFilters() {
+    const resultFilter = document.getElementById('filter-result').value;
+    const healedFilter = document.getElementById('filter-healed').value;
+    const strategyFilter = document.getElementById('filter-strategy').value;
+    const sortFilter = document.getElementById('filter-sort').value;
+
+    let filtered = [...steps];
+
+    if (resultFilter !== 'all') {
+      filtered = filtered.filter(s => s.result === resultFilter);
+    }
+    if (healedFilter === 'healed') {
+      filtered = filtered.filter(s => s.healed);
+    }
+    if (strategyFilter !== 'all') {
+      filtered = filtered.filter(s => (s.resolution_method || 'none') === strategyFilter);
+    }
+
+    if (sortFilter === 'duration') {
+      filtered.sort((a, b) => b.duration_ms - a.duration_ms);
+    } else {
+      filtered.sort((a, b) => a.step_number - b.step_number);
+    }
+
+    document.getElementById('step-cards').innerHTML = filtered.map(s => {
+      const screenshotUrl = normalizeArtifactPath(s.screenshot_path);
+      const strategy = s.resolution_method || 'none';
+      return `
+        <article class="report-step ${s.result}">
+          <header class="report-step-head">
+            <div class="step-main">
+              <strong>Step ${s.step_number}</strong>
+              <span class="badge ${toBadgeClass(s.result)}">${s.result}</span>
+              <span class="strategy-pill ${strategyColor[strategy] || 'strategy-none'}">${strategy}</span>
+              ${s.healed ? '<span class="heal-pill">healed</span>' : ''}
+            </div>
+            <div class="step-metrics">
+              <span>${s.duration_ms}ms</span>
+              <span>score: ${s.similarity_score != null ? s.similarity_score.toFixed(3) : '—'}</span>
+            </div>
+          </header>
+          <div class="step-grid">
+            <div>
+              <div class="kv"><span>CNL</span><span>${s.cnl_step || '—'}</span></div>
+              <div class="kv"><span>Action</span><span>${s.action?.action_type || '—'}</span></div>
+              <div class="kv"><span>Expected URL</span><span>${s.expected_url || '—'}</span></div>
+              <div class="kv"><span>Actual URL</span><span>${s.actual_url || '—'}</span></div>
+              <div class="kv"><span>Error</span><span class="err-cell">${s.error || '—'}</span></div>
+            </div>
+            <div>
+              ${screenshotUrl ? `<a href="${screenshotUrl}" target="_blank" rel="noopener"><img class="step-shot" src="${screenshotUrl}" alt="Step ${s.step_number} screenshot"></a>` : '<div class="step-shot-empty">No screenshot</div>'}
+            </div>
+          </div>
+          <details class="trace-details">
+            <summary>Resolution trace (${(s.resolution_trace || []).length})</summary>
+            ${renderTrace(s.resolution_trace || [])}
+          </details>
+        </article>
+      `;
+    }).join('') || '<p class="empty">No steps match filters.</p>';
+  }
+
+  ['filter-result', 'filter-healed', 'filter-strategy', 'filter-sort'].forEach(id => {
+    document.getElementById(id).addEventListener('change', applyFilters);
+  });
+  document.getElementById('compare-run').addEventListener('click', runComparison);
+
+  await loadComparisonCandidates();
 })();
 </script>
 {% endblock %}
