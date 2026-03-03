@@ -99,33 +99,59 @@ class EmbeddingStrategy(ResolutionStrategy):
     # ------------------------------------------------------------------
 
     def _build_query(self, action: RecordedAction) -> str:
-        """Construct the best possible semantic query from CNL + selector info."""
+        """Build a structured semantic query matching the candidate format.
+
+        Uses the same ``key=value`` notation as
+        :meth:`DOMParser.build_html_description` so that cosine
+        similarity between the query and the correct DOM candidate
+        is maximised.
+        """
         parts: list[str] = []
-
-        # CNL is the most human-meaningful signal
-        if action.cnl_step:
-            parts.append(action.cnl_step)
-
         s = action.selector
-        if s:
-            if s.aria_label:
-                parts.append(s.aria_label)
-            if s.text_content:
-                parts.append(s.text_content)
-            if s.placeholder:
-                parts.append(s.placeholder)
-            if s.tag_name:
-                parts.append(s.tag_name)
-            if s.role:
-                parts.append(s.role)
-            if s.id:
-                parts.append(s.id)
-            if s.class_name:
-                parts.append(s.class_name)
-            if s.outer_html_snippet:
-                parts.append(s.outer_html_snippet)
 
-        return " | ".join(p for p in parts if p)
+        # Tag name (e.g. 'input', 'button', 'a')
+        if s and s.tag_name and s.tag_name != "unknown":
+            parts.append(s.tag_name)
+
+        # Placeholder — strongest signal for text inputs
+        if s and s.placeholder:
+            parts.append(f'placeholder="{s.placeholder}"')
+
+        # Visible text — strongest signal for buttons/links
+        if s and s.text_content:
+            parts.append(f'text="{s.text_content}"')
+
+        # ARIA label
+        if s and s.aria_label:
+            parts.append(f'aria-label="{s.aria_label}"')
+
+        # Role
+        if s and s.role:
+            parts.append(f'role={s.role}')
+
+        # Element id
+        if s and s.id:
+            parts.append(f'id={s.id}')
+
+        # Input type
+        if s and s.input_type:
+            parts.append(f'type={s.input_type}')
+
+        # Name attribute
+        if s and s.name:
+            parts.append(f'name={s.name}')
+
+        # If we have structured parts, use them; otherwise fall back to
+        # the raw CNL step text (still better than nothing).
+        if parts:
+            return " ".join(parts)
+
+        # Fallback: CNL step text or outerHTML snippet
+        if action.cnl_step:
+            return action.cnl_step
+        if s and s.outer_html_snippet:
+            return s.outer_html_snippet
+        return ""
 
     @staticmethod
     async def _get_element_by_index(page: "Page | Frame", index: int) -> ElementHandle | None:

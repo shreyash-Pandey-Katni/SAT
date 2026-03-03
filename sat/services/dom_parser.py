@@ -79,18 +79,31 @@ class DOMParser:
 
     @staticmethod
     def build_html_description(el: dict) -> str:
-        """Build a single string describing an element for embedding."""
+        """Build a structured semantic description for embedding.
+
+        Uses a ``key=value`` notation that mirrors the query format
+        produced by :meth:`EmbeddingStrategy._build_query`, so that
+        cosine similarity between matching pairs is maximised.
+        """
         parts: list[str] = []
-        if el.get("outerHTML"):
-            parts.append(el["outerHTML"])
-        elif el.get("tag"):
-            parts.append(el["tag"])
-        if el.get("text"):
-            parts.append(el["text"])
-        if el.get("ariaLabel"):
-            parts.append(f'aria-label:{el["ariaLabel"]}')
+        tag = el.get("tag", "")
+        if tag:
+            parts.append(tag)
         if el.get("placeholder"):
-            parts.append(f'placeholder:{el["placeholder"]}')
+            parts.append(f'placeholder="{el["placeholder"]}"')
+        text = (el.get("text") or "").strip()
+        if text:
+            parts.append(f'text="{text[:80]}"')
+        if el.get("ariaLabel"):
+            parts.append(f'aria-label="{el["ariaLabel"]}"')
         if el.get("role"):
-            parts.append(f'role:{el["role"]}')
+            parts.append(f'role={el["role"]}')
+        if el.get("id"):
+            parts.append(f'id={el["id"]}')
+        if el.get("inputType"):
+            parts.append(f'type={el["inputType"]}')
+        if el.get("name"):
+            parts.append(f'name={el["name"]}')
+        if el.get("href"):
+            parts.append(f'href="{el["href"][:80]}"')
         return " ".join(parts)

@@ -149,7 +149,49 @@ class ActionPerformer:
         if element is None:
             raise RuntimeError("Cannot TYPE: element is None")
         value = action.value or ""
+        element = await self._ensure_fillable(element)
         await element.fill(value)             # Clear existing text and type new value
+
+    @staticmethod
+    async def _ensure_fillable(element: ElementHandle) -> ElementHandle:
+        """Return desired fillable element, drilling into wrappers if needed."""
+        page = element.page if hasattr(element, "page") else None
+        if page is None:
+            return element
+        js = """
+        (el) => {
+            const TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+            const isFillable = (e) =>
+                TAGS.has(e.tagName) || e.isContentEditable;
+            if (isFillable(el)) return null;
+            const child = el.querySelector('input, textarea, select, [contenteditable]');
+            if (child) return child;
+            const lbl = el.closest('label');
+            if (lbl) {
+                const forId = lbl.getAttribute('for');
+                if (forId) {
+                    const target = document.getElementById(forId);
+                    if (target && isFillable(target)) return target;
+                }
+                const nested = lbl.querySelector('input, textarea, select, [contenteditable]');
+                if (nested) return nested;
+            }
+            let parent = el.parentElement;
+            for (let i = 0; i < 3 && parent; i++, parent = parent.parentElement) {
+                const found = parent.querySelector('input, textarea, select, [contenteditable]');
+                if (found) return found;
+            }
+            return null;
+        }
+        """
+        try:
+            handle = await page.evaluate_handle(js, element)
+            better = handle.as_element()
+            if better:
+                return better
+        except Exception:
+            pass
+        return element
 
     async def _select(self, element: ElementHandle | None, action: RecordedAction) -> None:
         if element is None:

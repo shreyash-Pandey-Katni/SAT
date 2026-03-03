@@ -448,6 +448,7 @@ class CNLRunner:
 
         elif step.action_type == ActionType.TYPE:
             value = step.value or ""
+            element = await self._ensure_fillable(page, element)
             await element.fill(value)
             base["value"] = value
 
@@ -486,26 +487,128 @@ class CNLRunner:
         return base
 
     # ------------------------------------------------------------------
+    # Ensure element is fillable (input / textarea / contenteditable)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _ensure_fillable(
+        page: Page, element: ElementHandle,
+    ) -> ElementHandle:
+        """Return an element that Playwright's ``fill()`` can target.
+
+        If *element* is already a ``<input>``, ``<textarea>``, ``<select>``
+        or ``[contenteditable]`` it is returned as-is.  Otherwise we look
+        for a fillable descendant, then an ancestor, then a sibling —
+        covering the common case where VLM or Embedding resolve a wrapper
+        (``<div>``, ``<label>``, etc.) instead of the actual form control.
+        """
+        js = """
+        (el) => {
+            const TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+            const isFillable = (e) =>
+                TAGS.has(e.tagName) || e.isContentEditable;
+
+            if (isFillable(el)) return null;            // already good
+
+            // 1. Descendant
+            const child = el.querySelector('input, textarea, select, [contenteditable]');
+            if (child) return child;
+
+            // 2. <label for="…"> → getElementById
+            const lbl = el.closest('label');
+            if (lbl) {
+                const forId = lbl.getAttribute('for');
+                if (forId) {
+                    const target = document.getElementById(forId);
+                    if (target && isFillable(target)) return target;
+                }
+                const nested = lbl.querySelector('input, textarea, select, [contenteditable]');
+                if (nested) return nested;
+            }
+
+            // 3. Walk up max 3 ancestors looking for a fillable child
+            let parent = el.parentElement;
+            for (let i = 0; i < 3 && parent; i++, parent = parent.parentElement) {
+                const found = parent.querySelector('input, textarea, select, [contenteditable]');
+                if (found) return found;
+            }
+
+            return null;  // give up — caller will use fill() on original
+        }
+        """
+        try:
+            handle = await page.evaluate_handle(js, element)
+            better = handle.as_element()
+            if better:
+                logger.debug("_ensure_fillable: redirected to real input element")
+                return better
+        except Exception as exc:
+            logger.debug("_ensure_fillable JS error: %s", exc)
+
+        return element
+
+    # ------------------------------------------------------------------
     # Element resolution via StrategyChain
     # ------------------------------------------------------------------
+
+    # Map CNL element-type hints to HTML tag names / ARIA roles so the
+    # embedding query includes the same vocabulary the DOM uses.
+    _TYPE_HINT_MAP: dict[str, tuple[str, str | None]] = {
+        "textfield": ("input", "textbox"),
+        "button":    ("button", "button"),
+        "link":      ("a", "link"),
+        "checkbox":  ("input", "checkbox"),
+        "dropdown":  ("select", None),
+        "radio":     ("input", "radio"),
+        "tab":       ("button", "tab"),
+        "menu":      ("button", "menuitem"),
+        "image":     ("img", None),
+        "icon":      ("span", None),
+        "text":      ("span", None),
+    }
 
     async def _resolve_element(
         self, page: Page, step: CNLStep,
     ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
         """Resolve a CNL step's target element through the StrategyChain.
 
-        A stub :class:`RecordedAction` is built with ``selector=None`` so
-        that :class:`SelectorStrategy` fails gracefully and the chain
-        falls through to :class:`EmbeddingStrategy` (which uses
-        ``cnl_step`` as its semantic query).
+        Builds a stub :class:`RecordedAction` enriched with a
+        :class:`SelectorInfo` derived from the parsed CNL fields
+        (``element_query``, ``element_type_hint``).  This gives the
+        :class:`EmbeddingStrategy` semantic hints (placeholder, text,
+        tag name, role) that closely match the DOM descriptions, so it
+        can score candidates accurately instead of falling through to
+        VLM.
         """
+        # Derive selector hints from the CNL parse results
+        query = step.element_query or ""
+        hint = (step.element_type_hint or "").lower()
+        tag, role = self._TYPE_HINT_MAP.get(hint, (None, None))
+
+        # The element_query has the format "Label TypeHint" (e.g.
+        # "Enter password TextField").  Strip the type suffix so that
+        # the placeholder/text matches the DOM value exactly.
+        label = query
+        if step.element_type_hint and label.endswith(step.element_type_hint):
+            label = label[: -len(step.element_type_hint)].rstrip()
+
+        # For text-input types the label is typically a placeholder;
+        # for others it is visible text content.
+        is_input = hint in ("textfield", "dropdown", "checkbox", "radio")
+        selector_hint = SelectorInfo(
+            tag_name=tag or "unknown",
+            placeholder=label if is_input else None,
+            text_content=None if is_input else label,
+            role=role,
+        )
+
         stub = RecordedAction(
             step_number=step.step_number,
             action_type=step.action_type,
             url=page.url,
             tab_id=str(id(page)),
-            cnl_step=step.raw_cnl,
-            selector=None,
+            cnl_step=step.element_query or step.raw_cnl,
+            selector=selector_hint,
         )
         element, method, score, _trace = (
             await self._strategy_chain.resolve_element_with_trace(page, stub)
