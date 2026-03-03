@@ -61,7 +61,7 @@ class EmbeddingStrategyConfig:
 
 @dataclass
 class VLMStrategyConfig:
-    model: str = "llava:13b"
+    model: str = "llava:7b"
     ollama_base_url: str = "http://localhost:11434"
     temperature: float = 0.1
     max_tokens: int = 1024
