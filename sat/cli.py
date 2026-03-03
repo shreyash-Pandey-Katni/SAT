@@ -11,7 +11,6 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich import print as rprint  # noqa: F811
 
 app = typer.Typer(
     name="sat",
@@ -43,6 +42,30 @@ def _get_store(config, branch: str = "main"):
         max_reports_per_test=config.recorder.max_reports_per_test,
         branch=branch,
     )
+
+
+def _setup_logging(config_path: Optional[str] = None) -> None:
+    """Load config and initialise rotating-file + console logging."""
+    cfg = _load_config(config_path)
+    from sat.logging import setup_logging
+    setup_logging(
+        level=cfg.logging.level,
+        log_file=cfg.logging.log_file,
+        max_bytes=cfg.logging.max_bytes,
+        backup_count=cfg.logging.backup_count,
+    )
+
+
+@app.callback(invoke_without_command=True)
+def _main_callback(
+    ctx: typer.Context,
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config TOML"),
+) -> None:
+    """SAT — Activity Recorder & Intelligent Executor."""
+    # Store config path for subcommands and set up logging early
+    ctx.ensure_object(dict)
+    ctx.obj["config_path"] = config_path
+    _setup_logging(config_path)
 
 
 # ---------------------------------------------------------------------------

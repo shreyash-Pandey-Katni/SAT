@@ -90,12 +90,21 @@ class VariablesConfig:
 
 
 @dataclass
+class LoggingConfig:
+    level: str = "INFO"
+    log_file: str = "logs/sat.log"
+    max_bytes: int = 5_242_880       # 5 MB per file before rotation
+    backup_count: int = 5            # number of rotated backups to keep
+
+
+@dataclass
 class SATConfig:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     recorder: RecorderConfig = field(default_factory=RecorderConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     web: WebConfig = field(default_factory=WebConfig)
     variables: VariablesConfig = field(default_factory=VariablesConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +147,7 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
     e = data.get("executor", {})
     w = data.get("web", {})
     v = data.get("variables", {})
+    lg = data.get("logging", {})
 
     return SATConfig(
         browser=BrowserConfig(
@@ -174,5 +184,11 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
         ),
         variables=VariablesConfig(
             global_file=v.get("global_file", "config/variables.toml"),
+        ),
+        logging=LoggingConfig(
+            level=lg.get("level", "INFO"),
+            log_file=lg.get("log_file", "logs/sat.log"),
+            max_bytes=lg.get("max_bytes", 5_242_880),
+            backup_count=lg.get("backup_count", 5),
         ),
     )

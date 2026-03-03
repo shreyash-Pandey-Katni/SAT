@@ -44,3 +44,9 @@ port = 8000
 
 [variables]
 global_file = "config/variables.toml"       # path to global variables TOML
+
+[logging]
+level = "INFO"                              # DEBUG | INFO | WARNING | ERROR | CRITICAL
+log_file = "logs/sat.log"                   # path to log file (empty = disable file logging)
+max_bytes = 5242880                         # 5 MB — rotate when file exceeds this size
+backup_count = 5                            # number of rotated backup files to keep

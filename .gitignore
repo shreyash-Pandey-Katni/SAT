@@ -22,6 +22,9 @@ env/
 # Recordings & reports
 recordings/
 
+# Logs
+logs/
+
 # Playwright
 playwright/.local-browsers/
 
