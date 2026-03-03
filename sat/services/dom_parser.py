@@ -79,31 +79,54 @@ class DOMParser:
 
     @staticmethod
     def build_html_description(el: dict) -> str:
-        """Build a structured semantic description for embedding.
+        """Build a semantic description for the embedding stage.
 
-        Uses a ``key=value`` notation that mirrors the query format
-        produced by :meth:`EmbeddingStrategy._build_query`, so that
-        cosine similarity between matching pairs is maximised.
+        **Form controls** (``<input>``, ``<select>``, ``<textarea>``) use a
+        structured ``key=value`` format — this aligns with the query produced
+        by :meth:`EmbeddingStrategy._build_query` and scores 0.88+ for exact
+        label matches.
+
+        **Text-bearing elements** (buttons, links, nav items, divs with text)
+        use just their cleaned visible text, because the structured format
+        causes ``nomic-embed-text`` to cluster all structurally similar short
+        strings together and lose per-element discrimination.
         """
-        parts: list[str] = []
+        import re as _re
         tag = el.get("tag", "")
-        if tag:
-            parts.append(tag)
-        if el.get("placeholder"):
-            parts.append(f'placeholder="{el["placeholder"]}"')
-        text = (el.get("text") or "").strip()
-        if text:
-            parts.append(f'text="{text[:80]}"')
-        if el.get("ariaLabel"):
-            parts.append(f'aria-label="{el["ariaLabel"]}"')
-        if el.get("role"):
-            parts.append(f'role={el["role"]}')
-        if el.get("id"):
-            parts.append(f'id={el["id"]}')
-        if el.get("inputType"):
-            parts.append(f'type={el["inputType"]}')
-        if el.get("name"):
-            parts.append(f'name={el["name"]}')
-        if el.get("href"):
-            parts.append(f'href="{el["href"][:80]}"')
-        return " ".join(parts)
+        placeholder = el.get("placeholder", "") or ""
+        text_raw = (el.get("text") or "").strip()
+
+        # Form controls: structured format
+        if tag in ("input", "select", "textarea") or placeholder:
+            parts: list[str] = []
+            if tag:
+                parts.append(tag)
+            if placeholder:
+                parts.append(f'placeholder="{placeholder}"')
+            input_type = el.get("inputType", "")
+            if input_type and input_type != "text":
+                parts.append(f"type={input_type}")
+            aria = el.get("ariaLabel") or ""
+            if aria:
+                parts.append(f'label="{aria}"')
+            name = el.get("name") or ""
+            if name:
+                parts.append(f"name={name}")
+            return " ".join(parts)
+
+        # Text-bearing elements: stripped visible text only
+        if text_raw:
+            # Remove leading emoji / icon characters and trailing arrows
+            _noise = _re.compile(
+                r'^[\U0001F000-\U0001FFFF\u2190-\u27BF\u2600-\u26FF\u2700-\u27BF]+\s*'
+                r'|\s*[\u25BC\u25B2\u25C4\u25BA▼▲◄►]+\s*$'
+            )
+            _collapse = _re.compile(r'\s+')
+            clean = _noise.sub('', text_raw).strip()
+            clean = _collapse.sub(' ', clean).strip()[:120]
+            if clean:
+                return clean
+            return text_raw[:120]
+
+        # Fallback
+        return tag

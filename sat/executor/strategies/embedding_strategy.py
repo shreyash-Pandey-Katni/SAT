@@ -1,13 +1,24 @@
 """Strategy 2 — Semantic embeddings via Ollama.
 
-Extracts all visible interactable elements from the current DOM, embeds them
-alongside a query derived from CNL/selector info, and returns the best match
-if cosine similarity >= min_threshold.
+Resolution is a two-stage pipeline:
+
+1. **Text-match pass** (fast, no API call) — scores every DOM candidate by
+   exact / partial string overlap of the element's visible text, placeholder,
+   or aria-label against the CNL label.  Short, exact labels like
+   "CloudStreams" or "Log in" resolve here with score 1.0.
+
+2. **Embedding pass** — falls back to Ollama semantic embeddings when the
+   text-match pass yields no confident hit (score < TEXT_MATCH_THRESHOLD).
+   Form-control elements (``<input placeholder="…">``) have no visible text so
+   only this path can identify them; the structured query format produces
+   cosine scores >= 0.88 for well-labelled inputs.
 """
 
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 
 from playwright.async_api import ElementHandle, Frame, Page
 
@@ -18,6 +29,12 @@ from sat.services.dom_parser import DOMParser
 from sat.services.ollama_embedding import OllamaEmbeddingService
 
 logger = logging.getLogger(__name__)
+
+# Minimum text-match score to trust the result without calling the embedding model.
+_TEXT_MATCH_THRESHOLD = 0.90
+# Strip emoji, arrows and whitespace noise from element text.
+_NOISE_RE = re.compile(r'\s*[\u2190-\u21FF\u25A0-\u27FF\u2600-\u27BF\U0001F000-\U0001FFFF]+\s*')
+_COLLAPSE_RE = re.compile(r'\s+')
 
 
 class EmbeddingStrategy(ResolutionStrategy):
@@ -42,11 +59,6 @@ class EmbeddingStrategy(ResolutionStrategy):
     async def resolve(
         self, page: Page, action: RecordedAction
     ) -> tuple[ElementHandle | None, float | None]:
-        # Build semantic query
-        query = self._build_query(action)
-        if not query:
-            return None, None
-
         # Scope to iframe when the action was recorded inside one
         root: Page | Frame = page
         if action.selector and action.selector.frame_url:
@@ -58,10 +70,35 @@ class EmbeddingStrategy(ResolutionStrategy):
             logger.debug("EmbeddingStrategy: no interactable candidates found")
             return None, None
 
-        # Build text descriptions for each candidate
+        # ── Stage 1: fast text-match pass (no API call) ──────────────
+        label = _extract_label(action)
+        if label:
+            scored = [
+                (i, _text_score(label, c))
+                for i, c in enumerate(candidates)
+            ]
+            scored = [(i, s) for i, s in scored if s > 0]
+            if scored:
+                scored.sort(key=lambda x: x[1], reverse=True)
+                best_idx, best_score = scored[0]
+                if best_score >= _TEXT_MATCH_THRESHOLD:
+                    logger.debug(
+                        "EmbeddingStrategy text match: score=%.4f  idx=%d  text=%.60s",
+                        best_score, best_idx,
+                        (candidates[best_idx].get("text") or "").strip()[:60],
+                    )
+                    element = await self._get_element_by_index(
+                        root, candidates[best_idx]["index"]
+                    )
+                    return element, best_score
+
+        # ── Stage 2: semantic embedding (handles form controls) ──────
+        query = self._build_query(action)
+        if not query:
+            return None, None
+
         candidate_texts = [DOMParser.build_html_description(c) for c in candidates]
 
-        # Embed query + all candidates in parallel
         all_texts = [query] + candidate_texts
         try:
             embeddings = await self._svc.embed_batch(all_texts)
@@ -72,25 +109,23 @@ class EmbeddingStrategy(ResolutionStrategy):
         query_emb = embeddings[0]
         candidate_embs = embeddings[1:]
 
-        # Find best match
         ranked = self._svc.rank_candidates(query_emb, candidate_embs)
         if not ranked:
             return None, None
 
         best_idx, best_score = ranked[0]
         logger.debug(
-            "EmbeddingStrategy best match: score=%.4f  idx=%d  html=%.80s",
+            "EmbeddingStrategy embedding match: score=%.4f  idx=%d  desc=%.80s",
             best_score, best_idx, candidate_texts[best_idx],
         )
 
         if best_score < self._config.min_cosine_similarity:
             logger.debug(
-                "EmbeddingStrategy: best score %.4f < threshold %.4f",
+                "EmbeddingStrategy: best embedding score %.4f < threshold %.4f",
                 best_score, self._config.min_cosine_similarity,
             )
             return None, None
 
-        # Resolve the Playwright ElementHandle for this candidate by its DOM index
         element = await self._get_element_by_index(root, candidates[best_idx]["index"])
         return element, best_score
 
@@ -190,6 +225,64 @@ class EmbeddingStrategy(ResolutionStrategy):
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+def _extract_label(action: RecordedAction) -> str | None:
+    """Return the cleanest human-readable label from the action.
+
+    Priority order:
+    1. ``selector.placeholder`` — for form controls the placeholder IS the label
+    2. ``selector.text_content`` — visible button / link text
+    3. ``selector.aria_label`` — screen-reader label
+    4. ``cnl_step`` — raw CNL element_query as last resort
+    """
+    s = action.selector
+    if s:
+        if s.placeholder:
+            return s.placeholder.strip()
+        if s.text_content:
+            return s.text_content.strip()
+        if s.aria_label:
+            return s.aria_label.strip()
+    if action.cnl_step:
+        return action.cnl_step.strip()
+    return None
+
+
+def _text_score(label: str, candidate: dict) -> float:
+    """Score *candidate* by text/placeholder overlap with *label*.
+
+    Returns a confidence in [0, 1]:
+    - 1.00  exact case-insensitive match
+    - 0.97  label == cleaned text (emoji/noise stripped)
+    - 0.95  label is a prefix or suffix of text
+    - 0.90  label is a substring of text (or vice-versa)
+    - 0.00  no overlap
+    """
+    if not label:
+        return 0.0
+
+    label_n = label.strip().lower()
+
+    # Collect all textual signals from the candidate
+    raw_text = (candidate.get("text") or "").strip()
+    clean_text = _COLLAPSE_RE.sub(" ", _NOISE_RE.sub("", raw_text)).strip().lower()
+    placeholder = (candidate.get("placeholder") or "").strip().lower()
+    aria = (candidate.get("ariaLabel") or "").strip().lower()
+
+    best = 0.0
+    for target in (raw_text.lower(), clean_text, placeholder, aria):
+        if not target:
+            continue
+        if target == label_n:
+            return 1.0
+        if clean_text and clean_text == label_n:
+            best = max(best, 0.97)
+        if target.startswith(label_n) or target.endswith(label_n):
+            best = max(best, 0.95)
+        if label_n in target or target in label_n:
+            best = max(best, 0.90)
+    return best
+
 
 def _find_frame(page: Page, frame_url: str) -> Frame | None:
     """Return the first child Frame whose URL matches *frame_url*, or None."""

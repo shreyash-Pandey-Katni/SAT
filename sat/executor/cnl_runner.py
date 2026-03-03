@@ -588,8 +588,13 @@ class CNLRunner:
         # The element_query has the format "Label TypeHint" (e.g.
         # "Enter password TextField").  Strip the type suffix so that
         # the placeholder/text matches the DOM value exactly.
+        # Use case-insensitive comparison — _normalise_type() capitalises
+        # the hint ("TextField" → "Textfield") while the query preserves
+        # the original casing from the CNL source.
         label = query
-        if step.element_type_hint and label.endswith(step.element_type_hint):
+        if step.element_type_hint and label.lower().endswith(
+            step.element_type_hint.lower()
+        ):
             label = label[: -len(step.element_type_hint)].rstrip()
 
         # For text-input types the label is typically a placeholder;
