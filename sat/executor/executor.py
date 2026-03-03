@@ -147,6 +147,7 @@ class Executor:
             ActionType.SWITCH_TAB,
             ActionType.CLOSE_TAB,
             ActionType.SCROLL,
+            ActionType.STORE,
         ):
             try:
                 new_page = await self._performer.perform(page, None, action, all_pages)

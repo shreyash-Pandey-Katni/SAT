@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+{% block title %}Parallel Execution{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Parallel Test Execution</h1>
+  <a class="btn btn-sm" href="/">← Dashboard</a>
+</div>
+<p class="meta" style="margin-bottom:1rem;">
+  Select tests to execute in parallel.  Each test runs in its own browser instance.
+</p>
+
+<form id="par-form" class="form" style="max-width:700px;">
+  <label>Max parallel browsers
+    <input type="number" id="par-workers" value="4" min="1" max="16"/>
+  </label>
+  <label>Browser
+    <select id="par-browser">
+      <option value="chromium">Chromium</option>
+      <option value="firefox">Firefox</option>
+    </select>
+  </label>
+  <div id="test-select" style="margin:1rem 0;">
+    <p style="font-weight:600;">Select tests:</p>
+    <div id="test-list">Loading…</div>
+  </div>
+  <button type="submit" class="btn btn-primary" id="run-btn">Run Parallel</button>
+</form>
+
+<div id="progress" class="log hidden">
+  <h3>Progress</h3>
+  <div id="par-log"></div>
+</div>
+<div id="summary" class="hidden"></div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+const testList = document.getElementById('test-list');
+const parLog = document.getElementById('par-log');
+const progress = document.getElementById('progress');
+const summary = document.getElementById('summary');
+
+// Load available tests
+fetch('/api/recordings').then(r => r.json()).then(tests => {
+  if (!tests.length) { testList.innerHTML = '<em>No tests found.</em>'; return; }
+  testList.innerHTML = tests.map(t => `
+    <label style="display:block;margin:.3rem 0;">
+      <input type="checkbox" name="test_id" value="${t.id}"/>
+      <strong>${t.name}</strong> <span style="opacity:.6;">(${t.id.slice(0,8)}… · ${t.steps} steps)</span>
+    </label>
+  `).join('');
+});
+
+document.getElementById('par-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const checked = [...document.querySelectorAll('input[name=test_id]:checked')];
+  const testIds = checked.map(c => c.value);
+  if (!testIds.length) { alert('Select at least one test.'); return; }
+
+  const maxWorkers = parseInt(document.getElementById('par-workers').value) || 4;
+  const browser = document.getElementById('par-browser').value;
+
+  document.getElementById('run-btn').disabled = true;
+  progress.classList.remove('hidden');
+  summary.classList.add('hidden');
+  parLog.innerHTML = '';
+
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${proto}://${location.host}/ws/execute-parallel`);
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({test_ids: testIds, max_workers: maxWorkers, browser}));
+  };
+
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+
+    if (msg.type === 'step') {
+      const s = msg.data;
+      const ok = s.result === 'passed';
+      const icon = ok ? '✓' : '✗';
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = `[${msg.test_id.slice(0,8)}] ${icon} Step ${s.step_number} — ${s.action?.action_type || ''} ${s.duration_ms || 0}ms`;
+      parLog.appendChild(div);
+    }
+
+    else if (msg.type === 'test_done') {
+      const div = document.createElement('div');
+      div.style.fontWeight = '600';
+      div.style.margin = '.4rem 0';
+      const ok = msg.failed === 0;
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = `${ok ? '✓' : '✗'} ${msg.test_name} — passed=${msg.passed} failed=${msg.failed} ${msg.duration_s?.toFixed(2) || ''}s`;
+      parLog.appendChild(div);
+    }
+
+    else if (msg.type === 'all_done') {
+      summary.classList.remove('hidden');
+      const reps = msg.reports || [];
+      summary.innerHTML = `
+        <div class="summary-box">
+          <span class="pass">✓ ${msg.total_passed} passed</span>
+          <span class="fail">✗ ${msg.total_failed} failed</span>
+          <span>${reps.length} tests</span>
+        </div>
+        <ul style="margin-top:.5rem;">
+          ${reps.map(r => `<li>
+            <a href="/tests/${r.test_id}/reports/${r.id}">${r.test_name}</a>
+            — ${r.status} (${r.passed}/${r.passed+r.failed}) ${r.duration_s.toFixed(2)}s
+          </li>`).join('')}
+        </ul>`;
+      document.getElementById('run-btn').disabled = false;
+    }
+
+    else if (msg.type === 'error') {
+      const div = document.createElement('div');
+      div.className = 'fail';
+      div.textContent = `✗ Error: ${msg.message}`;
+      parLog.appendChild(div);
+      document.getElementById('run-btn').disabled = false;
+    }
+
+    else if (msg.type === 'warning') {
+      const div = document.createElement('div');
+      div.style.color = '#d69e2e';
+      div.textContent = `⚠ ${msg.message}`;
+      parLog.appendChild(div);
+    }
+  };
+
+  ws.onerror = () => {
+    parLog.innerHTML += '<div class="fail">✗ WebSocket error</div>';
+    document.getElementById('run-btn').disabled = false;
+  };
+});
+</script>
+{% endblock %}

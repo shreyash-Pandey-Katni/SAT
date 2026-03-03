@@ -1,0 +1,15 @@
+# SAT Global Variables
+# --------------------
+# Define variables here that can be used in CNL text as ${variable_name}.
+# Per-test variables (stored alongside test.json) override these values.
+# Runtime overrides (CLI --vars or Web UI) override both.
+#
+# Example:
+#   username = "admin"
+#   password = "secret123"
+#   base_url = "https://staging.example.com"
+#
+# Usage in CNL:
+#   Navigate to "${base_url}";
+#   Type "${username}" in "Username" TextField;
+#   Type "${password}" in "Password" TextField;

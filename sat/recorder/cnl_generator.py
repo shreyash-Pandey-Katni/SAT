@@ -50,6 +50,14 @@ class CNLGenerator:
                 el_type = self._element_type(action.selector)
                 return f'Hover "{label}" {el_type};'
 
+            case ActionType.STORE:
+                meta = action.metadata or {}
+                var_name = meta.get("variable_name", "var")
+                attr = meta.get("store_attribute", "text")
+                label = self._best_label(action.selector)
+                el_type = self._element_type(action.selector)
+                return f'Store {attr} of "{label}" {el_type} as "{var_name}";'
+
             case _:
                 return f'Perform {action.action_type.value};'
 

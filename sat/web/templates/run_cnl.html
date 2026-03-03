@@ -23,6 +23,12 @@ Type "admin" in "Username" TextField;
 Type "secret" in "Password" TextField;
 Click "Submit" Button;'></textarea>
   </label>
+  <details style="margin-bottom:.8rem;">
+    <summary style="cursor:pointer;font-weight:600;">Variables (optional)</summary>
+    <textarea id="cnl-vars" rows="4" placeholder='key=value (one per line)
+username=admin
+password=secret'></textarea>
+  </details>
   <div id="validation-result"></div>
   <div class="form-row">
     <button type="button" class="btn" id="validate-btn">Validate</button>
@@ -73,6 +79,17 @@ form.addEventListener('submit', e => {
   const startUrl = document.getElementById('cnl-url').value.trim();
   const name     = document.getElementById('cnl-name').value.trim() || 'CNL Test';
 
+  // Parse variables from key=value textarea
+  const varsText = (document.getElementById('cnl-vars').value || '').trim();
+  let variables = null;
+  if (varsText) {
+    variables = {};
+    varsText.split('\n').forEach(line => {
+      const idx = line.indexOf('=');
+      if (idx > 0) variables[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    });
+  }
+
   if (!cnl || !startUrl) { alert('Please fill in all fields.'); return; }
 
   runBtn.disabled = true;
@@ -85,7 +102,7 @@ form.addEventListener('submit', e => {
   const ws = new WebSocket(`${proto}://${location.host}/ws/run-cnl`);
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({cnl, start_url: startUrl, name}));
+    ws.send(JSON.stringify({cnl, start_url: startUrl, name, variables}));
   };
 
   ws.onmessage = ev => {

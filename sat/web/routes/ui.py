@@ -47,3 +47,8 @@ async def report_page(test_id: str, report_id: str, request: Request):
     return _t(request).TemplateResponse(
         "report.html", {"request": request, "test_id": test_id, "report_id": report_id}
     )
+
+
+@router.get("/execute-parallel", response_class=HTMLResponse)
+async def parallel_page(request: Request):
+    return _t(request).TemplateResponse("parallel.html", {"request": request})

@@ -28,6 +28,7 @@ class ActionType(str, Enum):
     SCROLL = "scroll"
     SELECT = "select"
     HOVER = "hover"
+    STORE = "store"            # capture element text into a variable
 
 
 class StepResult(str, Enum):
@@ -145,6 +146,10 @@ class RecordedTest(BaseModel):
     # CNL
     cnl: str | None = None                   # Full CNL text block
     cnl_steps: list[CNLStep] = Field(default_factory=list)
+    # Variables
+    variables_file: str | None = None        # per-test variables TOML path
+    # Versioning
+    branch: str = "main"                     # named branch
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +197,7 @@ class ExecutionReport(BaseModel):
     ended_at: datetime | None = None
     status: ExecutionStatus = ExecutionStatus.PASSED
     start_url: str | None = None
+    branch: str = "main"                     # branch this execution ran on
     total_steps: int
     passed: int
     failed: int

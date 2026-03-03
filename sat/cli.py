@@ -11,7 +11,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
-from rich import print as rprint
+from rich import print as rprint  # noqa: F811
 
 app = typer.Typer(
     name="sat",
@@ -20,6 +20,9 @@ app = typer.Typer(
 )
 cnl_app = typer.Typer(help="CNL management commands")
 app.add_typer(cnl_app, name="cnl")
+
+branch_app = typer.Typer(help="Branch management commands")
+app.add_typer(branch_app, name="branch")
 
 console = Console()
 
@@ -33,11 +36,12 @@ def _load_config(config_path: Optional[str]):
     return load_config(config_path)
 
 
-def _get_store(config):
+def _get_store(config, branch: str = "main"):
     from sat.storage.test_store import TestStore
     return TestStore(
         config.recorder.output_dir,
         max_reports_per_test=config.recorder.max_reports_per_test,
+        branch=branch,
     )
 
 
@@ -360,6 +364,163 @@ def doctor(
         console.print(f"{icon} Ollama VLM ({cfg.executor.vlm.model})")
 
     asyncio.run(_check())
+
+
+# ---------------------------------------------------------------------------
+# branch commands
+# ---------------------------------------------------------------------------
+
+@branch_app.command("list")
+def branch_list(
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List all branches."""
+    cfg = _load_config(config_path)
+    store = _get_store(cfg)
+    branches = store.list_branches()
+    for b in branches:
+        console.print(f"  {b}")
+
+
+@branch_app.command("create")
+def branch_create(
+    name: str = typer.Argument(..., help="Branch name"),
+    copy_from: Optional[str] = typer.Option(None, "--from", help="Copy tests from this branch"),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Create a new branch."""
+    cfg = _load_config(config_path)
+    store = _get_store(cfg)
+    store.create_branch(name, copy_from=copy_from)
+    console.print(f"[green]Created branch[/green] {name}")
+
+
+@branch_app.command("delete")
+def branch_delete(
+    name: str = typer.Argument(..., help="Branch name to delete"),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Delete a branch (cannot delete 'main')."""
+    if not yes:
+        typer.confirm(f"Delete branch {name!r}?", abort=True)
+    cfg = _load_config(config_path)
+    store = _get_store(cfg)
+    try:
+        store.delete_branch(name)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]Deleted branch[/green] {name}")
+
+
+# ---------------------------------------------------------------------------
+# run-cnl (CLI)
+# ---------------------------------------------------------------------------
+
+@app.command("run-cnl")
+def run_cnl(
+    cnl_file: str = typer.Argument(..., help="Path to .cnl file"),
+    start_url: str = typer.Option(..., "--url", "-u", help="Starting URL"),
+    name: str = typer.Option("CNL Test", "--name", "-n"),
+    vars_file: Optional[str] = typer.Option(None, "--vars", "-v", help="Variables TOML file"),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Parse and execute a CNL file against a live browser."""
+    from sat.executor.cnl_runner import CNLRunner
+    from sat.storage.test_store import TestStore
+
+    cfg = _load_config(config_path)
+    cnl_text = Path(cnl_file).read_text(encoding="utf-8")
+
+    # Load per-test variables if provided
+    variables: dict[str, str] | None = None
+    if vars_file:
+        from sat.cnl.variables import load_variables
+        variables = load_variables(per_test_path=vars_file)
+
+    async def _on_step(data: dict):
+        ok = data.get("status") == "passed"
+        icon = "✓" if ok else "✗"
+        color = "green" if ok else "red"
+        console.print(
+            f"  [{color}]{icon}[/{color}] step {data.get('step_number', '?'):>3}  "
+            f"{data.get('action_type', ''):<12}  {data.get('cnl_step', '')}"
+        )
+
+    async def _run():
+        runner = CNLRunner(cfg)
+        runner.on_step(_on_step)
+        test = await runner.run(cnl_text, start_url, name=name, variables=variables)
+
+        store = TestStore(cfg.recorder.output_dir)
+        store.save_test(test)
+        console.print(
+            f"\n[green]CNL run complete[/green]  id=[bold]{test.id}[/bold]  "
+            f"steps={len(test.actions)}"
+        )
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# execute-parallel
+# ---------------------------------------------------------------------------
+
+@app.command("execute-parallel")
+def execute_parallel(
+    test_ids: str = typer.Argument(..., help="Comma-separated test IDs"),
+    max_workers: int = typer.Option(4, "--max-workers", "-w", help="Max parallel browsers"),
+    browser: Optional[str] = typer.Option(None, "--browser", "-b"),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Execute multiple tests in parallel."""
+    from sat.executor.parallel_executor import ParallelExecutor
+    from sat.storage.test_store import TestStore
+
+    cfg = _load_config(config_path)
+    if browser:
+        cfg.browser.type = browser
+
+    store = TestStore(cfg.recorder.output_dir,
+                      max_reports_per_test=cfg.recorder.max_reports_per_test)
+    ids = [t.strip() for t in test_ids.split(",") if t.strip()]
+    tests = []
+    for tid in ids:
+        try:
+            tests.append(store.get_test(tid))
+        except FileNotFoundError:
+            console.print(f"[red]Test {tid!r} not found — skipping[/red]")
+
+    if not tests:
+        console.print("[red]No valid tests to execute.[/red]")
+        raise typer.Exit(code=1)
+
+    async def _run():
+        pe = ParallelExecutor(cfg, max_workers=max_workers)
+        reports = await pe.execute_all(tests)
+
+        total_passed = sum(r.passed for r in reports)
+        total_failed = sum(r.failed for r in reports)
+
+        for r in reports:
+            icon = "✓" if r.failed == 0 else "✗"
+            color = "green" if r.failed == 0 else "red"
+            console.print(
+                f"  [{color}]{icon}[/{color}] {r.test_name:<30} "
+                f"passed={r.passed} failed={r.failed} {r.duration_s:.2f}s"
+            )
+            store.save_report(r)
+
+        console.print(
+            f"\n[bold]Total:[/bold] passed=[green]{total_passed}[/green]  "
+            f"failed=[red]{total_failed}[/red]  tests={len(reports)}"
+        )
+        return total_failed
+
+    failed = asyncio.run(_run())
+    if failed > 0:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------

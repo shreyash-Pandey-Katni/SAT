@@ -9,8 +9,15 @@ CNL Grammar (informal):
     Switch to tab "<title>";
     Close current tab;
     Hover "<label>" [ElementType];
-    Wait <n> seconds;
-    Assert "<label>" [ElementType] (is visible|is hidden|contains "<text>"|has value "<text>");
+    Store text of "<label>" [ElementType] as "<var_name>";
+    Store value of "<label>" [ElementType] as "<var_name>";
+    Store <attr> of "<label>" [ElementType] as "<var_name>";
+
+    If "<label>" [ElementType] (is visible|is hidden|contains "<text>"|isEqual "<text>") {
+        <steps>
+    } Else {
+        <steps>
+    }
 
 ElementType = Button | Link | TextField | Checkbox | Dropdown | Radio | Tab | Menu | Element
 """
@@ -19,7 +26,15 @@ from __future__ import annotations
 
 import re
 
-from sat.cnl.models import CNLParseError, CNLStep, ParsedCNL
+from sat.cnl.models import (
+    CNLConditionalBlock,
+    CNLCondition,
+    CNLParseError,
+    CNLStep,
+    ConditionType,
+    ParsedCNL,
+)
+from sat.cnl.variables import substitute as _substitute_vars
 from sat.core.models import ActionType
 
 # ── Regex patterns for each statement type ──────────────────────────────────
@@ -83,7 +98,27 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
             rf'^\s*Hover\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
         ),
     ),
+    (
+        "store",
+        ActionType.STORE,
+        re.compile(
+            rf'^\s*Store\s+(\w+)\s+of\s+{_Q}(?:\s+(\w+))?\s+as\s+{_Q}\s*;\s*$',
+            re.IGNORECASE,
+        ),
+    ),
 ]
+
+# ── Conditional regex ────────────────────────────────────────────────────────
+# If "<label>" [ElementType] <condition> {
+_IF_RE = re.compile(
+    rf'^\s*If\s+{_Q}(?:\s+(\w+))?\s+'
+    r'(is\s+visible|is\s+hidden|contains\s+"([^"]*)"|isEqual\s+"([^"]*)")'
+    r'\s*\{\s*$',
+    re.IGNORECASE,
+)
+_ELSE_RE = re.compile(r'^\s*\}\s*Else\s*\{\s*$', re.IGNORECASE)
+_CLOSE_BRACE_RE = re.compile(r'^\s*\}\s*$')
+
 
 _KNOWN_ELEMENT_TYPES = {
     "button", "link", "textfield", "checkbox", "dropdown",
@@ -91,31 +126,163 @@ _KNOWN_ELEMENT_TYPES = {
 }
 
 
-def parse_cnl(text: str) -> ParsedCNL:
+def parse_cnl(text: str, variables: dict[str, str] | None = None) -> ParsedCNL:
     """Parse a multi-line CNL string into a :class:`ParsedCNL` result.
 
-    Lines that start with '#' are treated as comments.
-    Blank lines are ignored.
+    If *variables* is provided, ``${var}`` placeholders are replaced
+    before parsing.  Lines starting with '#' are comments.  Blank
+    lines are ignored.
     """
+    if variables:
+        text = _substitute_vars(text, variables)
+
+    lines = text.splitlines()
     steps: list[CNLStep] = []
     errors: list[CNLParseError] = []
+    conditional_blocks: list[CNLConditionalBlock] = []
     step_num = 0
+    idx = 0
 
-    for lineno, raw_line in enumerate(text.splitlines(), start=1):
+    while idx < len(lines):
+        lineno = idx + 1
+        raw_line = lines[idx]
         line = raw_line.strip()
+
         if not line or line.startswith("#"):
+            idx += 1
             continue
 
+        # ── Try conditional block ────────────────────────────────────
+        m_if = _IF_RE.match(line)
+        if m_if:
+            block, block_errors, consumed, step_num = _parse_conditional_block(
+                lines, idx, step_num,
+            )
+            if block is not None:
+                conditional_blocks.append(block)
+                # Flatten then/else steps into the main list for flat execution
+                steps.extend(block.then_steps)
+                steps.extend(block.else_steps)
+            errors.extend(block_errors)
+            idx += consumed
+            continue
+
+        # ── Regular statement ────────────────────────────────────────
         step_num += 1
         step = _parse_line(line, step_num, lineno)
         if step is None:
             errors.append(
-                CNLParseError(line=lineno, raw=raw_line, message=f"Unrecognised CNL statement: {line!r}")
+                CNLParseError(
+                    line=lineno, raw=raw_line,
+                    message=f"Unrecognised CNL statement: {line!r}",
+                )
             )
         else:
             steps.append(step)
+        idx += 1
 
-    return ParsedCNL(steps=steps, errors=errors)
+    return ParsedCNL(steps=steps, errors=errors, conditional_blocks=conditional_blocks)
+
+
+# ── Conditional block parser ─────────────────────────────────────────────────
+
+def _parse_conditional_block(
+    lines: list[str], start_idx: int, step_num: int,
+) -> tuple[CNLConditionalBlock | None, list[CNLParseError], int, int]:
+    """Parse an If/Else block starting at *start_idx*.
+
+    Returns (block, errors, lines_consumed, updated_step_num).
+    """
+    errors: list[CNLParseError] = []
+    lineno = start_idx + 1
+    line = lines[start_idx].strip()
+    m = _IF_RE.match(line)
+    if not m:
+        errors.append(CNLParseError(line=lineno, raw=lines[start_idx], message="Invalid If syntax"))
+        return None, errors, 1, step_num
+
+    label = m.group(1)
+    el_type = m.group(2)
+    cond_raw = m.group(3)
+    contains_val = m.group(4)
+    equal_val = m.group(5)
+
+    cond_type, expected = _parse_condition(cond_raw, contains_val, equal_val)
+    condition = CNLCondition(
+        element_query=_build_query(label, el_type),
+        element_type_hint=_normalise_type(el_type),
+        condition_type=cond_type,
+        expected_value=expected,
+    )
+
+    idx = start_idx + 1
+    then_steps: list[CNLStep] = []
+    else_steps: list[CNLStep] = []
+    in_else = False
+
+    while idx < len(lines):
+        lineno = idx + 1
+        raw = lines[idx]
+        stripped = raw.strip()
+
+        if not stripped or stripped.startswith("#"):
+            idx += 1
+            continue
+
+        if _ELSE_RE.match(stripped):
+            in_else = True
+            idx += 1
+            continue
+
+        if _CLOSE_BRACE_RE.match(stripped):
+            idx += 1
+            return (
+                CNLConditionalBlock(
+                    condition=condition,
+                    then_steps=then_steps,
+                    else_steps=else_steps,
+                    start_line=start_idx + 1,
+                ),
+                errors,
+                idx - start_idx,
+                step_num,
+            )
+
+        step_num += 1
+        step = _parse_line(stripped, step_num, lineno)
+        if step is None:
+            errors.append(CNLParseError(
+                line=lineno, raw=raw,
+                message=f"Unrecognised CNL inside block: {stripped!r}",
+            ))
+        else:
+            if in_else:
+                else_steps.append(step)
+            else:
+                then_steps.append(step)
+        idx += 1
+
+    # Unterminated block
+    errors.append(CNLParseError(
+        line=start_idx + 1, raw=lines[start_idx],
+        message="Unterminated If block — missing closing '}'",
+    ))
+    return None, errors, idx - start_idx, step_num
+
+
+def _parse_condition(
+    raw: str, contains_val: str | None, equal_val: str | None,
+) -> tuple[ConditionType, str | None]:
+    low = raw.lower().strip()
+    if low.startswith("is visible"):
+        return ConditionType.IS_VISIBLE, None
+    if low.startswith("is hidden"):
+        return ConditionType.IS_HIDDEN, None
+    if low.startswith("contains"):
+        return ConditionType.CONTAINS_TEXT, contains_val
+    if low.startswith("isequal"):
+        return ConditionType.IS_EQUAL, equal_val
+    return ConditionType.IS_VISIBLE, None
 
 
 # ── Private ──────────────────────────────────────────────────────────────────
@@ -212,6 +379,19 @@ def _build_step(
                 element_query=_build_query(label, el_type),
                 value=None,
                 element_type_hint=_normalise_type(el_type),
+            )
+        case "store":
+            # Groups: (attribute, label, el_type, var_name)
+            attribute, label, el_type, var_name = groups
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                value=None,
+                element_type_hint=_normalise_type(el_type),
+                variable_name=var_name,
+                store_attribute=attribute.lower(),
             )
         case _:
             raise ValueError(f"Unknown kind: {kind}")

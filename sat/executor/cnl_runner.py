@@ -3,15 +3,21 @@ the result as a new :class:`RecordedTest`.
 
 Flow
 ----
-1. Parse CNL text → list of :class:`CNLStep`.
+1. Parse CNL text → list of :class:`CNLStep` + conditional blocks.
 2. Open browser → navigate to *start_url*.
-3. For each CNL step:
-   a) Resolve the target element using Playwright's semantic locators
-      (role, text, placeholder, label).
-   b) Capture a selector snapshot + screenshot.
-   c) Perform the action (click / type / select / …).
+3. For each CNL step (with conditional evaluation and variable substitution):
+   a) Resolve the target element via the **StrategyChain**
+      (Selector → Embedding → VLM) — the same pipeline the Executor uses.
+   b) Extract a selector snapshot for future fast-path replay.
+   c) Perform the action (click / type / select / store / …).
 4. Package every captured step into a :class:`RecordedAction` and return
    a complete :class:`RecordedTest` ready for storage.
+
+On the *first* run no selectors exist, so ``SelectorStrategy`` falls through
+and ``EmbeddingStrategy`` (or ``VLMStrategy``) finds elements semantically.
+The discovered selectors are persisted in the resulting test so that
+subsequent re-executions via the **Executor** use fast CSS lookups and
+auto-heal if the page changes.
 """
 
 from __future__ import annotations
@@ -22,32 +28,121 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
-from playwright.async_api import ElementHandle, Frame, Page
+from playwright.async_api import ElementHandle, Page
 
-from sat.cnl.models import CNLStep
+from sat.cnl.models import (
+    CNLConditionalBlock,
+    CNLCondition,
+    CNLStep,
+    ConditionType,
+)
 from sat.cnl.parser import parse_cnl
+from sat.cnl.variables import VariableContext, load_variables
 from sat.config import SATConfig
 from sat.core.models import (
     ActionType,
     CNLStep as CoreCNLStep,
     RecordedAction,
     RecordedTest,
+    ResolutionMethod,
     SelectorInfo,
 )
 from sat.core.playwright_manager import PlaywrightManager
+from sat.executor.strategies.embedding_strategy import EmbeddingStrategy
+from sat.executor.strategies.selector_strategy import SelectorStrategy
+from sat.executor.strategies.vlm_strategy import VLMStrategy
+from sat.executor.strategy_chain import StrategyChain
 
 logger = logging.getLogger(__name__)
+
+# JS snippet to extract selector info from a live element — mirrors the
+# one in ``AutoHealer`` so the recorded selectors are identical in shape.
+_EXTRACT_SELECTOR_JS = """
+(el) => {
+    function computeSelector(el) {
+        if (el.id) return '#' + CSS.escape(el.id);
+        const parts = [];
+        let node = el;
+        while (node && node.tagName !== 'BODY') {
+            let sel = node.tagName.toLowerCase();
+            if (node.id) { parts.unshift('#' + CSS.escape(node.id)); break; }
+            let nth = 1;
+            let sib = node.previousSibling;
+            while (sib) {
+                if (sib.nodeType === 1 && sib.tagName === node.tagName) nth++;
+                sib = sib.previousSibling;
+            }
+            sel += ':nth-of-type(' + nth + ')';
+            parts.unshift(sel);
+            node = node.parentElement;
+        }
+        return parts.join(' > ');
+    }
+    function computeXPath(el) {
+        const parts = [];
+        let node = el;
+        while (node && node.nodeType === 1) {
+            let idx = 1, sib = node.previousSibling;
+            while (sib) {
+                if (sib.nodeType === 1 && sib.nodeName === node.nodeName) idx++;
+                sib = sib.previousSibling;
+            }
+            parts.unshift(node.nodeName.toLowerCase() + '[' + idx + ']');
+            node = node.parentElement;
+        }
+        return '/' + parts.join('/');
+    }
+    return {
+        tag_name: el.tagName.toLowerCase(),
+        id: el.id || null,
+        class_name: (el.className || '').substring(0, 200) || null,
+        name: el.getAttribute('name'),
+        text_content: (el.textContent || '').trim().substring(0, 200) || null,
+        aria_label: el.getAttribute('aria-label'),
+        placeholder: el.getAttribute('placeholder'),
+        data_testid: el.getAttribute('data-testid') || el.getAttribute('data-test-id'),
+        href: el.getAttribute('href'),
+        role: el.getAttribute('role'),
+        input_type: el.tagName === 'INPUT' ? (el.getAttribute('type') || 'text') : null,
+        outer_html_snippet: el.outerHTML.substring(0, 500),
+        parent_html_snippet: el.parentElement ? el.parentElement.outerHTML.substring(0, 300) : null,
+        css: computeSelector(el),
+        xpath: computeXPath(el),
+        in_shadow_dom: !!el.getRootNode().host,
+    };
+}
+"""
 
 StepCallback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
 class CNLRunner:
-    """Executes CNL text in a live browser and builds a RecordedTest."""
+    """Executes CNL text in a live browser and builds a RecordedTest.
+
+    Element resolution is delegated to the same :class:`StrategyChain` that
+    the :class:`Executor` uses (**Selector → Embedding → VLM**).  On the
+    first run there are no saved selectors so the chain falls through to
+    the semantic strategies; the discovered selectors are written into the
+    resulting :class:`RecordedTest` for fast CSS replay on re-execution.
+    """
 
     def __init__(self, config: SATConfig) -> None:
         self._config = config
         self._recordings_dir = Path(config.recorder.output_dir)
         self._step_callbacks: list[StepCallback] = []
+
+        # Build the same strategy chain the Executor uses
+        ec = config.executor
+        strategies_map = {
+            "selector": lambda: SelectorStrategy(timeout_ms=ec.selector.timeout_ms),
+            "embedding": lambda: EmbeddingStrategy(config=ec.embedding),
+            "vlm": lambda: VLMStrategy(config=ec.vlm),
+        }
+        self._strategy_chain = StrategyChain([
+            strategies_map[name]()
+            for name in ec.strategies
+            if name in strategies_map
+        ])
 
     def on_step(self, cb: StepCallback) -> None:
         self._step_callbacks.append(cb)
@@ -57,9 +152,17 @@ class CNLRunner:
         cnl_text: str,
         start_url: str,
         name: str = "CNL Test",
+        variables: dict[str, str] | None = None,
     ) -> RecordedTest:
         """Parse *cnl_text*, execute it, and return a persisted test."""
-        parsed = parse_cnl(cnl_text)
+        # Build variable context: global → per-test → runtime overrides
+        merged_vars = load_variables(
+            global_path=self._config.variables.global_file,
+            overrides=variables,
+        )
+        var_ctx = VariableContext(merged_vars)
+
+        parsed = parse_cnl(cnl_text, variables=var_ctx.get_all())
         if parsed.errors:
             msgs = "; ".join(
                 f"L{e.line}: {e.message}" for e in parsed.errors
@@ -79,10 +182,28 @@ class CNLRunner:
 
         actions: list[RecordedAction] = []
 
+        # Build a set of step_numbers belonging to conditional blocks
+        # so we know which steps need condition evaluation
+        cond_map = self._build_condition_map(parsed.conditional_blocks)
+
         try:
             for step in parsed.steps:
+                # ── Conditional check ────────────────────────────────
+                cond_info = cond_map.get(step.step_number)
+                if cond_info is not None:
+                    cond, is_then_branch = cond_info
+                    should_run = await self._evaluate_condition(active_page, cond)
+                    if is_then_branch and not should_run:
+                        continue  # skip then-branch steps
+                    if not is_then_branch and should_run:
+                        continue  # skip else-branch steps
+
+                # ── Runtime variable substitution in step values ─────
+                step = self._substitute_step(step, var_ctx)
+
                 result = await self._execute_cnl_step(
                     step, active_page, screenshots_dir, dom_dir, test_id,
+                    var_ctx,
                 )
                 new_page = result.pop("_new_page", None)
                 if new_page is not None:
@@ -103,7 +224,6 @@ class CNLRunner:
                     except Exception:
                         pass
         except Exception as exc:
-            # Report the failure to listeners then re-raise
             for cb in self._step_callbacks:
                 try:
                     await cb({
@@ -142,6 +262,73 @@ class CNLRunner:
         return test
 
     # ------------------------------------------------------------------
+    # Condition helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_condition_map(
+        blocks: list[CNLConditionalBlock],
+    ) -> dict[int, tuple[CNLCondition, bool]]:
+        """Map step_number → (condition, is_then_branch) for conditional steps."""
+        result: dict[int, tuple[CNLCondition, bool]] = {}
+        for block in blocks:
+            for step in block.then_steps:
+                result[step.step_number] = (block.condition, True)
+            for step in block.else_steps:
+                result[step.step_number] = (block.condition, False)
+        return result
+
+    async def _evaluate_condition(
+        self, page: Page, condition: CNLCondition,
+    ) -> bool:
+        """Evaluate a CNL condition against the current page state.
+
+        Conditions are transient checks — they use the StrategyChain to find
+        the element but do *not* persist selectors.
+        """
+        # Build a lightweight RecordedAction for the strategy chain
+        stub = RecordedAction(
+            step_number=0,
+            action_type=ActionType.CLICK,  # irrelevant for resolution
+            url=page.url,
+            tab_id=str(id(page)),
+            cnl_step=condition.raw_cnl if hasattr(condition, "raw_cnl") else (
+                f'{condition.element_query or ""} {condition.element_type_hint or ""}'.strip()
+            ),
+            selector=None,  # no saved selector → Embedding will resolve
+        )
+
+        element, _method, _score, _trace = (
+            await self._strategy_chain.resolve_element_with_trace(page, stub)
+        )
+
+        if element is None:
+            # Element not found — IS_HIDDEN is True, everything else False
+            return condition.condition_type == ConditionType.IS_HIDDEN
+
+        match condition.condition_type:
+            case ConditionType.IS_VISIBLE:
+                return await element.is_visible()
+            case ConditionType.IS_HIDDEN:
+                return not await element.is_visible()
+            case ConditionType.CONTAINS_TEXT:
+                text = await element.text_content() or ""
+                return (condition.expected_value or "") in text
+            case ConditionType.IS_EQUAL:
+                text = (await element.text_content() or "").strip()
+                return text == (condition.expected_value or "")
+        return False
+
+    @staticmethod
+    def _substitute_step(step: CNLStep, var_ctx: VariableContext) -> CNLStep:
+        """Return a copy of *step* with ``${var}`` replaced in value fields."""
+        new_value = var_ctx.substitute(step.value) if step.value else step.value
+        new_query = var_ctx.substitute(step.element_query) if step.element_query else step.element_query
+        if new_value != step.value or new_query != step.element_query:
+            return step.model_copy(update={"value": new_value, "element_query": new_query})
+        return step
+
+    # ------------------------------------------------------------------
     # Per-step execution
     # ------------------------------------------------------------------
 
@@ -152,11 +339,12 @@ class CNLRunner:
         screenshots_dir: Path,
         dom_dir: Path,
         test_id: str,
+        var_ctx: VariableContext | None = None,
     ) -> dict[str, Any]:
         """Execute one CNL step and return a dict ready for RecordedAction."""
         logger.info("[cnl-run step %d] %s", step.step_number, step.raw_cnl)
 
-        base = {
+        base: dict[str, Any] = {
             "step_number": step.step_number,
             "timestamp": datetime.utcnow().isoformat(),
             "action_type": step.action_type.value,
@@ -212,15 +400,21 @@ class CNLRunner:
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             return base
 
-        # ── Element actions ──────────────────────────────────────────────
-        element, locator_info = await self._resolve_element(page, step)
+        # ── Element actions — delegate to StrategyChain ──────────────────
+        element, method, score = await self._resolve_element(page, step)
         if element is None:
             raise RuntimeError(
                 f"Step {step.step_number}: could not find element "
-                f"for '{step.raw_cnl}'"
+                f"for '{step.raw_cnl}' — all strategies exhausted"
             )
 
-        # Capture selector info from the live element
+        logger.info(
+            "  → resolved via %s (score=%s)",
+            method.value,
+            f"{score:.4f}" if score is not None else "N/A",
+        )
+
+        # Extract selector info from the live element for future fast replay
         selector = await self._extract_selector(page, element)
         base["selector"] = selector.model_dump()
 
@@ -244,10 +438,9 @@ class CNLRunner:
         except Exception:
             pass
 
-        # Perform the action
+        # ── Perform the action ───────────────────────────────────────────
         if step.action_type == ActionType.CLICK:
             await element.click()
-            # Wait for potential navigation / popup
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3000)
             except Exception:
@@ -266,190 +459,98 @@ class CNLRunner:
         elif step.action_type == ActionType.HOVER:
             await element.hover()
 
+        elif step.action_type == ActionType.STORE:
+            # Extract value from element and store into variable context
+            attr = (step.store_attribute or "text").lower()
+            if attr == "text":
+                stored_value = (await element.text_content() or "").strip()
+            elif attr == "value":
+                stored_value = await element.input_value() if hasattr(element, "input_value") else (
+                    await page.evaluate("(el) => el.value || ''", element)
+                )
+            else:
+                stored_value = await page.evaluate(
+                    f"(el) => el.getAttribute('{attr}') || ''", element
+                )
+            if var_ctx and step.variable_name:
+                var_ctx.set(step.variable_name, stored_value)
+                logger.info(
+                    "  → stored ${%s} = %r", step.variable_name, stored_value
+                )
+            base["value"] = stored_value
+            base["metadata"] = {
+                "variable_name": step.variable_name,
+                "store_attribute": attr,
+            }
+
         return base
 
     # ------------------------------------------------------------------
-    # Element resolution via Playwright semantic locators
+    # Element resolution via StrategyChain
     # ------------------------------------------------------------------
 
     async def _resolve_element(
-        self, page: Page, step: CNLStep
-    ) -> tuple[ElementHandle | None, str]:
-        """Use Playwright's smart locators to find the element described by
-        the CNL step's *element_query* and *element_type_hint*.
+        self, page: Page, step: CNLStep,
+    ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
+        """Resolve a CNL step's target element through the StrategyChain.
 
-        Returns ``(handle, description)`` or ``(None, "")`` on failure.
+        A stub :class:`RecordedAction` is built with ``selector=None`` so
+        that :class:`SelectorStrategy` fails gracefully and the chain
+        falls through to :class:`EmbeddingStrategy` (which uses
+        ``cnl_step`` as its semantic query).
         """
-        query = step.element_query or ""
-        hint = (step.element_type_hint or "").lower()
-        # Strip the element type from the query if it was appended
-        label = query
-        if hint and query.lower().endswith(hint):
-            label = query[: -len(hint)].strip()
-
-        locators = self._build_cnl_locators(page, label, hint, step)
-
-        for desc, loc in locators:
-            try:
-                count = await loc.count()
-                if count >= 1:
-                    handle = await loc.first.element_handle()
-                    if handle:
-                        # Verify it's visible
-                        if await handle.is_visible():
-                            logger.info(
-                                "  → resolved via %s (count=%d)", desc, count
-                            )
-                            return handle, desc
-            except Exception as exc:
-                logger.debug("  locator %s failed: %s", desc, exc)
-                continue
-
-        logger.warning(
-            "Step %d: no element found for query=%r hint=%r",
-            step.step_number, query, hint,
+        stub = RecordedAction(
+            step_number=step.step_number,
+            action_type=step.action_type,
+            url=page.url,
+            tab_id=str(id(page)),
+            cnl_step=step.raw_cnl,
+            selector=None,
         )
-        return None, ""
-
-    def _build_cnl_locators(self, page: Page, label: str, hint: str, step: CNLStep):
-        """Yield ``(description, Locator)`` pairs in priority order."""
-        locators: list[tuple[str, Any]] = []
-
-        # Map CNL element type hints to Playwright ARIA roles
-        role_map = {
-            "button": "button",
-            "link": "link",
-            "textfield": "textbox",
-            "checkbox": "checkbox",
-            "dropdown": "combobox",
-            "radio": "radio",
-            "tab": "tab",
-            "menu": "menu",
-            "image": "img",
-        }
-
-        role = role_map.get(hint)
-
-        # 1. Role + name (most semantic)
-        if role and label:
-            locators.append((
-                f'get_by_role("{role}", name="{label}")',
-                page.get_by_role(role, name=label),  # type: ignore[arg-type]
-            ))
-
-        # 2. Placeholder (for text fields)
-        if hint in ("textfield", "") and label:
-            locators.append((
-                f'get_by_placeholder("{label}")',
-                page.get_by_placeholder(label),
-            ))
-
-        # 3. Label
-        if label:
-            locators.append((
-                f'get_by_label("{label}")',
-                page.get_by_label(label),
-            ))
-
-        # 4. Exact text
-        if label:
-            locators.append((
-                f'get_by_text("{label}", exact)',
-                page.get_by_text(label, exact=True),
-            ))
-
-        # 5. Partial text
-        if label:
-            locators.append((
-                f'get_by_text("{label}")',
-                page.get_by_text(label),
-            ))
-
-        # 6. Title attribute
-        if label:
-            locators.append((
-                f'get_by_title("{label}")',
-                page.get_by_title(label),
-            ))
-
-        # 7. CSS with text content (tag + text)
-        tag = self._hint_to_tag(hint)
-        if tag and label:
-            locators.append((
-                f'{tag}:has-text("{label}")',
-                page.locator(f'{tag}:has-text("{label}")'),
-            ))
-
-        # 8. Generic text fallback (any element)
-        if label:
-            locators.append((
-                f'*:has-text("{label}") (generic)',
-                page.locator(f'*:has-text("{label}")').last,
-            ))
-
-        return locators
-
-    @staticmethod
-    def _hint_to_tag(hint: str) -> str | None:
-        return {
-            "button": "button",
-            "link": "a",
-            "textfield": "input",
-            "checkbox": "input[type=checkbox]",
-            "radio": "input[type=radio]",
-            "dropdown": "select",
-            "image": "img",
-        }.get(hint)
+        element, method, score, _trace = (
+            await self._strategy_chain.resolve_element_with_trace(page, stub)
+        )
+        return element, method, score
 
     # ------------------------------------------------------------------
     # Selector extraction from live element
     # ------------------------------------------------------------------
 
     async def _extract_selector(
-        self, page: Page, element: ElementHandle
+        self, page: Page, element: ElementHandle,
     ) -> SelectorInfo:
-        """Build a :class:`SelectorInfo` by evaluating properties on the live element."""
-        info: dict = await page.evaluate("""(el) => {
-            function cssPath(e) {
-                const parts = [];
-                while (e && e.nodeType === 1) {
-                    let sel = e.localName;
-                    if (e.id) { parts.unshift('#' + e.id); break; }
-                    let sib = e, nth = 1;
-                    while (sib = sib.previousElementSibling) { if (sib.localName === sel) nth++; }
-                    if (nth > 1) sel += ':nth-of-type(' + nth + ')';
-                    parts.unshift(sel);
-                    e = e.parentElement;
-                }
-                return parts.join(' > ');
-            }
-            const outer = el.outerHTML || '';
-            return {
-                tag_name: el.tagName.toLowerCase(),
-                css: cssPath(el),
-                id: el.id || null,
-                name: el.getAttribute('name') || null,
-                class_name: el.className || null,
-                text_content: (el.textContent || '').trim().slice(0, 200) || null,
-                aria_label: el.getAttribute('aria-label') || null,
-                placeholder: el.getAttribute('placeholder') || null,
-                data_testid: el.getAttribute('data-testid') || null,
-                href: el.getAttribute('href') || null,
-                role: el.getAttribute('role') || null,
-                input_type: el.getAttribute('type') || null,
-                outer_html_snippet: outer.slice(0, 300),
-                parent_html_snippet: (el.parentElement?.innerHTML || '').slice(0, 400) || null,
-                in_shadow_dom: !!el.getRootNode().host,
-            };
-        }""", element)
-        return SelectorInfo(**info)
+        """Extract selector info from a live DOM element.
+
+        The returned :class:`SelectorInfo` is written into the test's
+        :class:`RecordedAction` so that future Executor re-runs can use
+        the fast :class:`SelectorStrategy` path.
+        """
+        data: dict = await page.evaluate(_EXTRACT_SELECTOR_JS, element)
+        return SelectorInfo(
+            tag_name=data.get("tag_name", "unknown"),
+            css=data.get("css"),
+            xpath=data.get("xpath"),
+            id=data.get("id") or None,
+            name=data.get("name"),
+            class_name=data.get("class_name") or None,
+            text_content=data.get("text_content") or None,
+            aria_label=data.get("aria_label"),
+            placeholder=data.get("placeholder"),
+            data_testid=data.get("data_testid"),
+            href=data.get("href"),
+            role=data.get("role"),
+            input_type=data.get("input_type"),
+            outer_html_snippet=data.get("outer_html_snippet", ""),
+            parent_html_snippet=data.get("parent_html_snippet"),
+            in_shadow_dom=data.get("in_shadow_dom", False),
+        )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     async def _find_tab(
-        self, current: Page, title_or_url: str
+        self, current: Page, title_or_url: str,
     ) -> Page | None:
         for p in current.context.pages:
             if p == current or p.is_closed():

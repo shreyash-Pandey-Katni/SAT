@@ -85,11 +85,17 @@ class WebConfig:
 
 
 @dataclass
+class VariablesConfig:
+    global_file: str = "config/variables.toml"
+
+
+@dataclass
 class SATConfig:
     browser: BrowserConfig = field(default_factory=BrowserConfig)
     recorder: RecorderConfig = field(default_factory=RecorderConfig)
     executor: ExecutorConfig = field(default_factory=ExecutorConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    variables: VariablesConfig = field(default_factory=VariablesConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +137,7 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
     r = data.get("recorder", {})
     e = data.get("executor", {})
     w = data.get("web", {})
+    v = data.get("variables", {})
 
     return SATConfig(
         browser=BrowserConfig(
@@ -164,5 +171,8 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
         web=WebConfig(
             host=w.get("host", "0.0.0.0"),
             port=w.get("port", 8000),
+        ),
+        variables=VariablesConfig(
+            global_file=v.get("global_file", "config/variables.toml"),
         ),
     )

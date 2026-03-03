@@ -119,6 +119,11 @@ class ActionPerformer:
                 scroll_y = vp.get("scrollY", 0)
                 await page.evaluate(f"window.scrollTo({scroll_x}, {scroll_y})")
 
+            case ActionType.STORE:
+                # STORE is a no-op in the traditional executor; the value
+                # extraction is handled by CNLRunner at the higher level.
+                pass
+
             case _:
                 logger.warning("ActionPerformer: unknown action type %s", action.action_type)
 
