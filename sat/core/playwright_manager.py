@@ -37,7 +37,13 @@ class PlaywrightManager:
         self._active_tab_id = tab_id
 
         if url:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="load")
+            # Wait for network to be idle to ensure dynamic content loads
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                # Continue if timeout - page should be mostly ready
+                pass
 
         return page
 
@@ -79,7 +85,12 @@ class PlaywrightManager:
         self._pages[tab_id] = page
         self._active_tab_id = tab_id
         if url:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="load")
+            # Wait for network to be idle
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
         return page
 
     def switch_to(self, tab_id: str) -> Page:

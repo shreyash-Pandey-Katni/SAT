@@ -29,6 +29,7 @@ class ActionType(str, Enum):
     SELECT = "select"
     HOVER = "hover"
     STORE = "store"            # capture element text into a variable
+    ASSERT = "assert"          # validate element state or content
 
 
 class StepResult(str, Enum):
