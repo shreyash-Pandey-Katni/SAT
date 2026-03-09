@@ -16,8 +16,13 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sat.core.models import ExecutionReport, RecordedTest
+
+if TYPE_CHECKING:
+    from sat.config import SATConfig
+    from sat.services.cnl_regenerator import RegenerationReport
 
 
 def _safe_replace(src: str, dst: str | Path, retries: int = 3) -> None:
@@ -269,12 +274,32 @@ class TestStore:
     # ------------------------------------------------------------------
 
     def update_cnl(self, test_id: str, cnl_text: str, branch: str | None = None) -> RecordedTest:
+        """Update CNL text only (legacy behavior - doesn't regenerate actions).
+        
+        WARNING: This only updates the CNL display text. The underlying actions
+        are NOT regenerated, so edits won't affect test execution.
+        
+        Use update_cnl_with_regeneration() for full CNL editing support.
+        """
         from sat.cnl.parser import parse_cnl
+        from sat.core.models import CNLStep as CoreCNLStep
 
         test = self.get_test(test_id, branch)
         test.cnl = cnl_text
         parsed = parse_cnl(cnl_text)
-        test.cnl_steps = parsed.steps
+        
+        # Convert parsed CNL steps to core CNL steps
+        test.cnl_steps = [
+            CoreCNLStep(
+                step_number=s.step_number,
+                raw_cnl=s.raw_cnl,
+                action_type=s.action_type,
+                element_query=s.element_query,
+                value=s.value,
+                element_type_hint=s.element_type_hint,
+            )
+            for s in parsed.steps
+        ]
 
         # Merge CNL steps back into actions
         cnl_by_step = {cs.step_number: cs for cs in parsed.steps}
@@ -285,6 +310,69 @@ class TestStore:
 
         self.save_test_atomic(test, branch)
         return test
+
+    async def update_cnl_with_regeneration(
+        self,
+        test_id: str,
+        cnl_text: str,
+        config: "SATConfig",
+        branch: str | None = None,
+        preserve_selectors: bool = True,
+    ) -> tuple[RecordedTest, "RegenerationReport"]:
+        """Update CNL and regenerate actions from the edited CNL.
+        
+        This is the recommended way to edit CNL as it ensures the underlying
+        actions are updated to match the edited CNL text.
+        
+        Args:
+            test_id: ID of the test to update
+            cnl_text: New CNL text
+            config: SAT configuration (needed for browser automation)
+            branch: Optional branch name
+            preserve_selectors: If True, preserve selectors for unchanged steps
+            
+        Returns:
+            Tuple of (updated_test, regeneration_report)
+        """
+        from sat.services.cnl_regenerator import CNLRegenerator, RegenerationReport
+
+        test = self.get_test(test_id, branch)
+        
+        # Create regenerator
+        regenerator = CNLRegenerator(config)
+        
+        # Regenerate actions
+        new_actions, report = await regenerator.regenerate_actions(
+            test=test,
+            new_cnl=cnl_text,
+            preserve_selectors=preserve_selectors,
+        )
+        
+        # Update test with new data
+        test.cnl = cnl_text
+        test.actions = new_actions
+        
+        # Re-parse CNL to update cnl_steps
+        from sat.cnl.parser import parse_cnl
+        from sat.core.models import CNLStep as CoreCNLStep
+        
+        parsed = parse_cnl(cnl_text)
+        test.cnl_steps = [
+            CoreCNLStep(
+                step_number=s.step_number,
+                raw_cnl=s.raw_cnl,
+                action_type=s.action_type,
+                element_query=s.element_query,
+                value=s.value,
+                element_type_hint=s.element_type_hint,
+            )
+            for s in parsed.steps
+        ]
+        
+        # Save atomically
+        self.save_test_atomic(test, branch)
+        
+        return test, report
 
     # ------------------------------------------------------------------
     # Helpers
