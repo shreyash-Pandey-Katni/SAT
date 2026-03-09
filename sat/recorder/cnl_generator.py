@@ -58,6 +58,16 @@ class CNLGenerator:
                 el_type = self._element_type(action.selector)
                 return f'Store {attr} of "{label}" {el_type} as "{var_name}";'
 
+            case ActionType.CHECK:
+                label = self._best_label(action.selector)
+                el_type = self._element_type(action.selector)
+                return f'Check "{label}" {el_type};'
+
+            case ActionType.UNCHECK:
+                label = self._best_label(action.selector)
+                el_type = self._element_type(action.selector)
+                return f'Uncheck "{label}" {el_type};'
+
             case _:
                 return f'Perform {action.action_type.value};'
 

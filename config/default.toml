@@ -20,7 +20,7 @@ navigation_causation_window_ms = 2000   # nav within this window after click/typ
 timeout_per_step_s = 10
 strategies = ["selector", "embedding", "vlm"]
 auto_heal = true
-wait_after_action = "networkidle"       # "networkidle" | "domcontentloaded" | "load" | "none"
+wait_after_action = "domcontentloaded"  # "domcontentloaded" | "load" | "networkidle" | "none"
 
 [executor.selector]
 timeout_ms = 5000

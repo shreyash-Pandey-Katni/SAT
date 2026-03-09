@@ -287,7 +287,10 @@ class Executor:
         if mode == "none":
             return
         try:
-            await page.wait_for_load_state(mode, timeout=5000)  # type: ignore[arg-type]
+            # Short timeout: if the page hasn't settled by now the action
+            # likely didn't trigger a navigation.  Avoids the old 5 s
+            # penalty that `networkidle` caused on every single step.
+            await page.wait_for_load_state(mode, timeout=2000)  # type: ignore[arg-type]
         except Exception:
             pass  # Timeout is acceptable — page may already be stable
 

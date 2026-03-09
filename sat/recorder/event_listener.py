@@ -58,6 +58,7 @@ class EventListener:
         self._pages: set[int] = set()           # track which pages are already wired
         self._active_tab_id: str | None = None  # tab that last received an action
         self._context_wired: bool = False        # context-level listeners attached once
+        self._last_action: RecordedAction | None = None  # for navigation annotation
 
     # ------------------------------------------------------------------
     # Public setup
@@ -132,13 +133,16 @@ class EventListener:
 
     def _make_click_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            # Register interaction FIRST (before any await) so the
+            # NavigationCausationTracker can suppress the framenavigated
+            # event that fires once this click causes a page navigation.
+            self._nav_tracker.on_user_interaction("click", target_href=data.get("href"))
+
             await self._maybe_emit_switch_tab(page)
 
             step = self._next_step()
             url = page.url
             tab_id = str(id(page))
-
-            self._nav_tracker.on_user_interaction("click", target_href=data.get("href"))
 
             scr_path, snap_path = await self._capture_artifacts(page, step)
             cnl = self._cnl_gen.generate(
@@ -154,13 +158,14 @@ class EventListener:
 
     def _make_input_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            # Register interaction FIRST — see _make_click_handler.
+            self._nav_tracker.on_user_interaction("type")
+
             await self._maybe_emit_switch_tab(page)
 
             step = self._next_step()
             url = page.url
             tab_id = str(id(page))
-
-            self._nav_tracker.on_user_interaction("type")
 
             scr_path, snap_path = await self._capture_artifacts(page, step)
             cnl = self._cnl_gen.generate(
@@ -176,6 +181,9 @@ class EventListener:
 
     def _make_select_handler(self, page: Page) -> Callable:
         async def handler(data: dict) -> None:
+            # Register interaction FIRST — onchange can trigger navigation.
+            self._nav_tracker.on_user_interaction("select")
+
             await self._maybe_emit_switch_tab(page)
 
             step = self._next_step()
@@ -201,17 +209,44 @@ class EventListener:
             url = frame.url
             if not url or url == "about:blank":
                 return
-            if not self._nav_tracker.is_user_initiated(url):
-                logger.debug("Navigation caused by interaction, skipping: %s", url)
-                return
-
-            step = self._next_step()
-            tab_id = str(id(page))
-            cnl = f'Navigate to "{url}";' if self._auto_generate_cnl else None
-            action = self._builder.build_navigate(url, step, tab_id, cnl)
-            asyncio.ensure_future(self._emit(action))
+            # Defer to an async task so pending click/type binding
+            # callbacks (which are also scheduled as async tasks) can
+            # register their interaction with the NavigationCausationTracker
+            # before we check is_user_initiated().  Without this, the
+            # synchronous handler fires *before* the async click handler
+            # and every click-caused navigation is recorded as a
+            # duplicate NAVIGATE step.
+            asyncio.ensure_future(self._process_navigation(page, url))
 
         return handler
+
+    async def _process_navigation(self, page: Page, url: str) -> None:
+        """Decide whether a framenavigated event is user-initiated."""
+        # Yield once — this lets any binding callbacks (click/type/select)
+        # that were scheduled just before this navigation event run first
+        # and register with the NavigationCausationTracker.
+        await asyncio.sleep(0)
+
+        if not self._nav_tracker.is_user_initiated(url):
+            logger.debug("Navigation caused by interaction, skipping: %s", url)
+            # Annotate the preceding action so execution layers know
+            # this interaction caused a full page navigation.
+            if self._last_action is not None:
+                meta = dict(self._last_action.metadata or {})
+                meta["causes_navigation"] = True
+                meta["destination_url"] = url
+                self._last_action.metadata = meta
+                logger.debug(
+                    "Annotated step %d with destination_url=%s",
+                    self._last_action.step_number, url,
+                )
+            return
+
+        step = self._next_step()
+        tab_id = str(id(page))
+        cnl = f'Navigate to "{url}";' if self._auto_generate_cnl else None
+        action = self._builder.build_navigate(url, step, tab_id, cnl)
+        await self._emit(action)
 
     async def _on_new_page(self, page: Page) -> None:
         """Called instantly when a new tab/window opens.
@@ -300,6 +335,7 @@ class EventListener:
         return self._step_counter
 
     async def _emit(self, action: RecordedAction) -> None:
+        self._last_action = action
         try:
             await self._on_action(action)
         except Exception as exc:

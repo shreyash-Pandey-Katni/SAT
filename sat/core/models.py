@@ -30,6 +30,8 @@ class ActionType(str, Enum):
     HOVER = "hover"
     STORE = "store"            # capture element text into a variable
     ASSERT = "assert"          # validate element state or content
+    CHECK = "check"            # ensure checkbox/radio is checked
+    UNCHECK = "uncheck"        # ensure checkbox/radio is unchecked
 
 
 class StepResult(str, Enum):

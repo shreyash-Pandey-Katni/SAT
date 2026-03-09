@@ -8,6 +8,7 @@ as ActionType.NAVIGATE steps.
 from __future__ import annotations
 
 import time
+from urllib.parse import urlparse
 
 
 class NavigationCausationTracker:
@@ -32,11 +33,11 @@ class NavigationCausationTracker:
         """Register that an interaction just occurred.
 
         Args:
-            action_type:  e.g. "click" | "type"
+            action_type:  e.g. "click" | "type" | "select"
             target_href:  href attribute of the clicked element (if any).
         """
         self._last_interaction_ts = time.monotonic()
-        if target_href and target_href.startswith("http"):
+        if target_href:
             self._pending_hrefs.add(target_href)
 
     # ------------------------------------------------------------------
@@ -52,12 +53,21 @@ class NavigationCausationTracker:
 
         Otherwise it is treated as user-initiated (URL bar change, back/fwd).
         """
-        # Check pending hrefs first (link clicks resolved by URL match)
-        without_fragment = new_url.split("#")[0].split("?")[0]
+        # Check pending hrefs — handles both absolute and relative hrefs.
+        new_path = _url_path(new_url)
         for pending in list(self._pending_hrefs):
-            if pending.split("#")[0].split("?")[0] == without_fragment:
-                self._pending_hrefs.discard(pending)
-                return False
+            # Absolute href: compare full path
+            if pending.startswith("http"):
+                if _url_path(pending) == new_path:
+                    self._pending_hrefs.discard(pending)
+                    return False
+            else:
+                # Relative href ("/dashboard", "page.html", etc.):
+                # check if the navigation URL's path ends with the href path
+                pending_clean = pending.split("#")[0].split("?")[0]
+                if new_path == pending_clean or new_path.endswith(pending_clean):
+                    self._pending_hrefs.discard(pending)
+                    return False
 
         # Check time window
         elapsed_ms = (time.monotonic() - self._last_interaction_ts) * 1000
@@ -69,3 +79,9 @@ class NavigationCausationTracker:
     def clear(self) -> None:
         self._last_interaction_ts = 0.0
         self._pending_hrefs.clear()
+
+
+def _url_path(url: str) -> str:
+    """Extract the path portion of a URL, stripping query string and fragment."""
+    parsed = urlparse(url)
+    return parsed.path or "/"

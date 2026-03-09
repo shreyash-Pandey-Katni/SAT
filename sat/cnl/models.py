@@ -19,6 +19,8 @@ class ConditionType(str, Enum):
     IS_HIDDEN = "is_hidden"
     CONTAINS_TEXT = "contains_text"
     IS_EQUAL = "is_equal"
+    IS_ENABLED = "is_enabled"
+    IS_DISABLED = "is_disabled"
 
 
 class CNLCondition(BaseModel):
@@ -46,6 +48,8 @@ class CNLStep(BaseModel):
     # Store-specific
     variable_name: str | None = None       # For STORE: name of variable to store into
     store_attribute: str | None = None     # "text" (default) | "value" | "<attr-name>"
+    # Select-specific
+    select_mode: str | None = None         # "text" (default) | "index" | "value"
     # Assertion-specific
     assertion_type: ConditionType | None = None      # For ASSERT: type of assertion
     assertion_expected: str | None = None            # For ASSERT: expected value

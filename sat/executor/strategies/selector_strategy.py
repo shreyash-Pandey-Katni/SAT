@@ -24,6 +24,11 @@ from sat.executor.strategies.base import ResolutionStrategy
 
 logger = logging.getLogger(__name__)
 
+# Maximum time (ms) to wait for a matched-but-invisible element to become
+# visible.  Keeps the slow-path from burning the full selector timeout
+# (default 5 000 ms) on stale/hidden DOM matches.
+_VISIBILITY_WAIT_MS = 1500
+
 
 class SelectorStrategy(ResolutionStrategy):
     """Resolves elements using their recorded CSS/XPath/attribute selectors."""
@@ -71,27 +76,38 @@ class SelectorStrategy(ResolutionStrategy):
                     locator = root.locator(str(locator_expr))
 
                 # Fast pre-check: skip locators that match zero DOM elements.
-                # This avoids burning the full timeout (e.g. 5 000 ms) on stale
-                # selectors such as old IDs after a UI change.
-                if await locator.count() == 0:
+                # This avoids burning the full timeout on stale selectors such
+                # as old IDs after a UI change.
+                count = await locator.count()
+                if count == 0:
                     logger.debug("Selector skip (0 matches): %s", locator_expr)
                     continue
 
-                await locator.wait_for(state="visible", timeout=self._timeout)
-                count = await locator.count()
-                if count == 1:
-                    handle = await locator.element_handle()
-                    if handle:
-                        logger.debug("SelectorStrategy hit: %s", locator_expr)
-                        return handle, None
-                elif count > 1:
-                    first = locator.first
+                # ── Fast-path: element already visible → return immediately ──
+                # Avoids the expensive wait_for timeout when the element exists
+                # in the DOM but is hidden (e.g. duplicate IDs, off-screen
+                # variants, stale CSS selectors matching invisible nodes).
+                first = locator.first
+                if await first.is_visible():
                     handle = await first.element_handle()
                     if handle:
-                        logger.debug("SelectorStrategy hit (first of %d): %s", count, locator_expr)
+                        logger.debug("SelectorStrategy hit (visible fast-path): %s", locator_expr)
                         return handle, None
+
+                # ── Slow-path: element exists but isn't visible yet ──────────
+                # Wait briefly for it to become visible (e.g. CSS animation,
+                # lazy rendering).  Use a short timeout — if the element won't
+                # appear in 1.5 s it's almost certainly a stale/hidden match.
+                await locator.wait_for(
+                    state="visible",
+                    timeout=min(self._timeout, _VISIBILITY_WAIT_MS),
+                )
+                handle = await locator.first.element_handle()
+                if handle:
+                    logger.debug("SelectorStrategy hit (after wait): %s", locator_expr)
+                    return handle, None
             except (TimeoutError, Error) as exc:
-                logger.debug("Selector failed (%s): %s", locator_expr, exc)
+                logger.debug("Selector skip (not visible): %s — %s", locator_expr, exc)
                 continue
 
         return None, None

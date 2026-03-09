@@ -317,6 +317,10 @@ class CNLRunner:
             case ConditionType.IS_EQUAL:
                 text = (await element.text_content() or "").strip()
                 return text == (condition.expected_value or "")
+            case ConditionType.IS_ENABLED:
+                return await element.is_enabled()
+            case ConditionType.IS_DISABLED:
+                return not await element.is_enabled()
         return False
 
     @staticmethod
@@ -391,6 +395,15 @@ class CNLRunner:
 
                 expected = (step.assertion_expected or "").strip()
                 passed = actual_value == expected
+
+            case ConditionType.IS_ENABLED:
+                passed = await element.is_enabled()
+                actual_value = "enabled" if passed else "disabled"
+
+            case ConditionType.IS_DISABLED:
+                is_enabled = await element.is_enabled()
+                passed = not is_enabled
+                actual_value = "disabled" if passed else "enabled"
 
         # Store assertion metadata
         base["metadata"] = {
@@ -552,7 +565,10 @@ class CNLRunner:
         if step.action_type == ActionType.CLICK:
             await element.click()
             try:
-                await page.wait_for_load_state("domcontentloaded", timeout=3000)
+                # Short wait — most clicks don't trigger full navigations.
+                # Playwright already auto-waits for actionability; this just
+                # covers the rare case of a click that triggers a page load.
+                await page.wait_for_load_state("domcontentloaded", timeout=1500)
             except Exception:
                 pass
 
@@ -564,7 +580,17 @@ class CNLRunner:
 
         elif step.action_type == ActionType.SELECT:
             value = step.value or ""
-            await element.select_option(value=value)
+            mode = getattr(step, "select_mode", None) or "text"
+            if mode == "index":
+                await element.select_option(index=int(value))
+            elif mode == "value":
+                await element.select_option(value=value)
+            else:
+                # Try label first (visible text), fall back to value
+                try:
+                    await element.select_option(label=value)
+                except Exception:
+                    await element.select_option(value=value)
             base["value"] = value
 
         elif step.action_type == ActionType.HOVER:
@@ -597,6 +623,31 @@ class CNLRunner:
         elif step.action_type == ActionType.ASSERT:
             # Execute assertion and fail test if it doesn't pass
             await self._execute_assertion(step, page, element, base)
+
+        elif step.action_type in (ActionType.CHECK, ActionType.UNCHECK):
+            desired_checked = step.action_type == ActionType.CHECK
+            # Get current checked state (checkbox or radio)
+            is_checked = await page.evaluate(
+                "(el) => el.checked === true || el.getAttribute('aria-checked') === 'true'",
+                element,
+            )
+            if is_checked != desired_checked:
+                await element.click()
+                logger.info(
+                    "  \u2192 %s: toggled (was %s)",
+                    step.action_type.value, is_checked,
+                )
+            else:
+                logger.info(
+                    "  \u2192 %s: already in desired state (%s)",
+                    step.action_type.value, is_checked,
+                )
+            base["value"] = str(desired_checked)
+            base["metadata"] = {
+                "previous_state": is_checked,
+                "desired_state": desired_checked,
+                "toggled": is_checked != desired_checked,
+            }
 
         return base
 
