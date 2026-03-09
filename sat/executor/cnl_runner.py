@@ -329,6 +329,116 @@ class CNLRunner:
         return step
 
     # ------------------------------------------------------------------
+    # Assertion execution
+    # ------------------------------------------------------------------
+
+    async def _execute_assertion(
+        self,
+        step: CNLStep,
+        page: Page,
+        element: ElementHandle,
+        base: dict[str, Any],
+    ) -> None:
+        """Execute an assertion and raise AssertionError if it fails.
+        
+        Updates base dict with assertion metadata.
+        Raises AssertionError with detailed message if assertion fails.
+        """
+        if not step.assertion_type:
+            return
+
+        # Determine what attribute to check (text or value)
+        check_attribute = step.store_attribute or "text"
+        actual_value = None
+        passed = False
+
+        # Evaluate assertion based on type
+        match step.assertion_type:
+            case ConditionType.IS_VISIBLE:
+                passed = await element.is_visible()
+                actual_value = "visible" if passed else "hidden"
+
+            case ConditionType.IS_HIDDEN:
+                is_visible = await element.is_visible()
+                passed = not is_visible
+                actual_value = "hidden" if passed else "visible"
+
+            case ConditionType.CONTAINS_TEXT:
+                # Check text or value based on store_attribute
+                if check_attribute == "value":
+                    # Get input value for form fields
+                    actual_value = await element.input_value() if hasattr(element, "input_value") else (
+                        await page.evaluate("(el) => el.value || ''", element)
+                    )
+                else:
+                    # Get text content
+                    actual_value = await element.text_content() or ""
+
+                expected = step.assertion_expected or ""
+                passed = expected in actual_value
+
+            case ConditionType.IS_EQUAL:
+                # Check text or value based on store_attribute
+                if check_attribute == "value":
+                    # Get input value for form fields
+                    actual_value = await element.input_value() if hasattr(element, "input_value") else (
+                        await page.evaluate("(el) => el.value || ''", element)
+                    )
+                    actual_value = actual_value.strip()
+                else:
+                    # Get text content
+                    actual_value = (await element.text_content() or "").strip()
+
+                expected = (step.assertion_expected or "").strip()
+                passed = actual_value == expected
+
+        # Store assertion metadata
+        base["metadata"] = {
+            "assertion_type": step.assertion_type.value,
+            "assertion_expected": step.assertion_expected,
+            "assertion_actual": actual_value,
+            "assertion_result": "passed" if passed else "failed",
+        }
+
+        # Log result
+        if passed:
+            logger.info(
+                "  → assertion passed: %s",
+                step.assertion_type.value,
+            )
+        else:
+            # Format detailed error message
+            error_msg = self._format_assertion_error(
+                step.step_number,
+                step.raw_cnl,
+                step.assertion_type,
+                step.assertion_expected,
+                actual_value,
+            )
+            logger.error("  → assertion failed: %s", step.assertion_type.value)
+            raise AssertionError(error_msg)
+
+    @staticmethod
+    def _format_assertion_error(
+        step_number: int,
+        raw_cnl: str,
+        assertion_type: ConditionType,
+        expected: str | None,
+        actual: str | None,
+    ) -> str:
+        """Format a detailed assertion error message."""
+        msg = f"Assertion failed at step {step_number}:\n"
+        msg += f"  CNL: {raw_cnl}\n"
+        msg += f"  Type: {assertion_type.value}\n"
+
+        if expected is not None:
+            msg += f"  Expected: {expected!r}\n"
+        if actual is not None:
+            msg += f"  Actual: {actual!r}\n"
+
+        return msg
+
+    # ------------------------------------------------------------------
     # Per-step execution
     # ------------------------------------------------------------------
 
@@ -483,6 +593,10 @@ class CNLRunner:
                 "variable_name": step.variable_name,
                 "store_attribute": attr,
             }
+
+        elif step.action_type == ActionType.ASSERT:
+            # Execute assertion and fail test if it doesn't pass
+            await self._execute_assertion(step, page, element, base)
 
         return base
 

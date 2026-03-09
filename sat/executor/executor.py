@@ -298,7 +298,9 @@ class Executor:
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / f"step_{step:04d}.png"
             await page.screenshot(path=str(path), type="png")
-            return str(path)
+            # Use as_posix() to ensure forward slashes on all platforms
+            # This ensures paths work correctly in web UI and JSON reports
+            return path.as_posix()
         except Exception as exc:
             logger.debug("Post-execution screenshot failed: %s", exc)
             return None
