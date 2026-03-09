@@ -20,6 +20,9 @@ const strategyColor = {
 
 function normalizeArtifactPath(path) {
   if (!path) return null;
+  // Normalize backslashes to forward slashes for cross-platform compatibility
+  // This handles both new reports (with forward slashes) and old Windows reports (with backslashes)
+  path = path.replace(/\\/g, '/');
   const marker = '/recordings/';
   const markerIdx = path.lastIndexOf(marker);
   if (markerIdx >= 0) {

@@ -8,13 +8,27 @@
 
 <div class="cnl-editor">
   <textarea id="cnl-input" rows="20" placeholder="# Write your CNL steps here
-Click &quot;Log in&quot; Button;
-Type &quot;hello@example.com&quot; in Email Input;
-Click &quot;Submit&quot; Button;"></textarea>
+Click "Log in" Button;
+Type "hello@example.com" in Email Input;
+Click "Submit" Button;"></textarea>
+  
+  <div class="regeneration-options" style="margin: 0.75rem 0;">
+    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem;">
+      <input type="checkbox" id="auto-regenerate" checked>
+      <span>Regenerate actions from CNL (recommended - ensures changes work during execution)</span>
+    </label>
+    <p style="font-size: 0.82rem; color: #a0aec0; margin-top: 0.3rem; margin-left: 1.5rem;">
+      ⚠️ Regeneration will re-execute CNL in a browser to update selectors. This may take 30-60 seconds.
+    </p>
+  </div>
+  
   <div id="validation-result"></div>
+  <div id="regeneration-status" class="hidden" style="margin-top: 0.75rem;"></div>
+  
   <div class="form-row">
     <button class="btn" id="validate-btn">Validate</button>
-    <button class="btn btn-primary" id="save-btn">Save</button>
+    <button class="btn btn-primary" id="save-btn">Save & Regenerate</button>
+    <button class="btn" id="save-only-btn">Save Text Only</button>
   </div>
 </div>
 {% endblock %}
@@ -24,12 +38,21 @@ Click &quot;Submit&quot; Button;"></textarea>
 const testId = '{{ test_id }}';
 const input = document.getElementById('cnl-input');
 const result = document.getElementById('validation-result');
+const regenStatus = document.getElementById('regeneration-status');
+const autoRegen = document.getElementById('auto-regenerate');
+const saveBtn = document.getElementById('save-btn');
+const saveOnlyBtn = document.getElementById('save-only-btn');
 
 // Load existing CNL
 (async () => {
   const res = await fetch(`/api/recordings/${testId}/cnl`);
   if (res.ok) { const d = await res.json(); input.value = d.cnl || ''; }
 })();
+
+// Update button text based on checkbox
+autoRegen.addEventListener('change', () => {
+  saveBtn.textContent = autoRegen.checked ? 'Save & Regenerate' : 'Save';
+});
 
 document.getElementById('validate-btn').addEventListener('click', async () => {
   const r = await fetch('/api/cnl/validate', {
@@ -45,15 +68,81 @@ document.getElementById('validate-btn').addEventListener('click', async () => {
   }
 });
 
-document.getElementById('save-btn').addEventListener('click', async () => {
+// Save with regeneration
+saveBtn.addEventListener('click', async () => {
+  const shouldRegenerate = autoRegen.checked;
+  const endpoint = shouldRegenerate 
+    ? `/api/recordings/${testId}/cnl/regenerate`
+    : `/api/recordings/${testId}/cnl`;
+  
+  result.innerHTML = '<span style="color: #90cdf4;">Saving...</span>';
+  regenStatus.classList.add('hidden');
+  
+  if (shouldRegenerate) {
+    result.innerHTML = '<span style="color: #90cdf4;">🔄 Regenerating actions (this may take 30-60 seconds)...</span>';
+  }
+  
+  try {
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        cnl: input.value,
+        preserve_selectors: true
+      })
+    });
+    
+    if (r.ok) {
+      const d = await r.json();
+      
+      if (shouldRegenerate && d.changes) {
+        // Show regeneration results
+        const changes = d.changes;
+        let statusHtml = '<h3 style="margin-bottom: 0.5rem;">Regeneration Complete</h3><ul style="list-style: none; padding: 0;">';
+        if (changes.preserved > 0) statusHtml += `<li>✓ ${changes.preserved} step(s) preserved</li>`;
+        if (changes.added > 0) statusHtml += `<li style="color: #68d391;">+ ${changes.added} step(s) added</li>`;
+        if (changes.modified > 0) statusHtml += `<li style="color: #f6e05e;">~ ${changes.modified} step(s) modified</li>`;
+        if (changes.removed > 0) statusHtml += `<li style="color: #fc8181;">- ${changes.removed} step(s) removed</li>`;
+        statusHtml += '</ul>';
+        
+        if (d.warnings && d.warnings.length > 0) {
+          statusHtml += '<div style="margin-top: 0.5rem; color: #f6e05e;">';
+          d.warnings.forEach(w => {
+            statusHtml += `<div>⚠️ ${w}</div>`;
+          });
+          statusHtml += '</div>';
+        }
+        
+        regenStatus.innerHTML = statusHtml;
+        regenStatus.classList.remove('hidden');
+        result.innerHTML = `<span class="ok">✓ Saved & Regenerated — ${d.steps_parsed} steps parsed</span>`;
+      } else {
+        result.innerHTML = `<span class="ok">✓ Saved — ${d.steps_parsed} steps parsed</span>`;
+      }
+    } else {
+      const d = await r.json();
+      result.innerHTML = `<span class="err">Error: ${d.detail}</span>`;
+    }
+  } catch (err) {
+    result.innerHTML = `<span class="err">Error: ${err.message}</span>`;
+  }
+});
+
+// Save text only (legacy)
+saveOnlyBtn.addEventListener('click', async () => {
+  result.innerHTML = '<span style="color: #90cdf4;">Saving...</span>';
+  regenStatus.classList.add('hidden');
+  
   const r = await fetch(`/api/recordings/${testId}/cnl`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({cnl: input.value})
   });
+  
   if (r.ok) {
     const d = await r.json();
-    result.innerHTML = `<span class="ok">✓ Saved — ${d.steps_parsed} steps parsed</span>`;
+    result.innerHTML = `<span class="ok">✓ Saved (text only) — ${d.steps_parsed} steps parsed</span>`;
+    result.innerHTML += '<div style="color: #f6e05e; font-size: 0.85rem; margin-top: 0.3rem;">⚠️ Warning: Actions were not regenerated. Changes may not affect test execution.</div>';
   } else {
     const d = await r.json();
     result.innerHTML = `<span class="err">Error: ${d.detail}</span>`;
