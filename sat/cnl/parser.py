@@ -5,6 +5,7 @@ CNL Grammar (informal):
     Type "<value>" in "<label>" [ElementType];
     Select "<value>" in "<label>" Dropdown;
     Navigate to "<url>";
+    GoToURL "<url>";  # Alias for compatibility with other CNL tools
     Open new tab "<url>";
     Switch to tab "<title>";
     Close current tab;
@@ -12,6 +13,13 @@ CNL Grammar (informal):
     Store text of "<label>" [ElementType] as "<var_name>";
     Store value of "<label>" [ElementType] as "<var_name>";
     Store <attr> of "<label>" [ElementType] as "<var_name>";
+
+    Assert "<label>" [ElementType] is visible;
+    Assert "<label>" [ElementType] is hidden;
+    Assert text of "<label>" [ElementType] contains "<text>";
+    Assert text of "<label>" [ElementType] isEqual "<text>";
+    Assert value of "<label>" [ElementType] contains "<text>";
+    Assert value of "<label>" [ElementType] isEqual "<text>";
 
     If "<label>" [ElementType] (is visible|is hidden|contains "<text>"|isEqual "<text>") {
         <steps>
@@ -71,6 +79,13 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         ),
     ),
     (
+        "go_to_url",  # Alias for compatibility with other CNL tools
+        ActionType.NAVIGATE,
+        re.compile(
+            rf'^\s*GoToURL\s+{_Q}\s*;\s*$', re.IGNORECASE
+        ),
+    ),
+    (
         "new_tab",
         ActionType.NEW_TAB,
         re.compile(
@@ -104,6 +119,55 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         re.compile(
             rf'^\s*Store\s+(\w+)\s+of\s+{_Q}(?:\s+(\w+))?\s+as\s+{_Q}\s*;\s*$',
             re.IGNORECASE,
+        ),
+    ),
+    # Assertion patterns
+    (
+        "assert_visible",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?\s+is\s+visible\s*;\s*$',
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "assert_hidden",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?\s+is\s+hidden\s*;\s*$',
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "assert_text_contains",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+contains\s+{_Q}\s*;\s*$',
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "assert_text_equal",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+isEqual\s+{_Q}\s*;\s*$',
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "assert_value_contains",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?\s+contains\s+{_Q}\s*;\s*$',
+            re.IGNORECASE
+        ),
+    ),
+    (
+        "assert_value_equal",
+        ActionType.ASSERT,
+        re.compile(
+            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?\s+isEqual\s+{_Q}\s*;\s*$',
+            re.IGNORECASE
         ),
     ),
 ]
@@ -336,7 +400,7 @@ def _build_step(
                 value=value,
                 element_type_hint="Dropdown",
             )
-        case "navigate":
+        case "navigate" | "go_to_url":
             url = groups[0]
             return CNLStep(
                 step_number=step_num,
@@ -392,6 +456,76 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 variable_name=var_name,
                 store_attribute=attribute.lower(),
+            )
+        case "assert_visible":
+            label, el_type = groups[0], groups[1]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.IS_VISIBLE,
+                assertion_expected=None,
+            )
+        case "assert_hidden":
+            label, el_type = groups[0], groups[1]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.IS_HIDDEN,
+                assertion_expected=None,
+            )
+        case "assert_text_contains":
+            label, el_type, expected = groups[0], groups[1], groups[2]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.CONTAINS_TEXT,
+                assertion_expected=expected,
+                store_attribute="text",
+            )
+        case "assert_text_equal":
+            label, el_type, expected = groups[0], groups[1], groups[2]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.IS_EQUAL,
+                assertion_expected=expected,
+                store_attribute="text",
+            )
+        case "assert_value_contains":
+            label, el_type, expected = groups[0], groups[1], groups[2]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.CONTAINS_TEXT,
+                assertion_expected=expected,
+                store_attribute="value",
+            )
+        case "assert_value_equal":
+            label, el_type, expected = groups[0], groups[1], groups[2]
+            return CNLStep(
+                step_number=step_num,
+                raw_cnl=raw_cnl,
+                action_type=action_type,
+                element_query=_build_query(label, el_type),
+                element_type_hint=_normalise_type(el_type),
+                assertion_type=ConditionType.IS_EQUAL,
+                assertion_expected=expected,
+                store_attribute="value",
             )
         case _:
             raise ValueError(f"Unknown kind: {kind}")

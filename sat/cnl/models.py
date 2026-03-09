@@ -46,6 +46,9 @@ class CNLStep(BaseModel):
     # Store-specific
     variable_name: str | None = None       # For STORE: name of variable to store into
     store_attribute: str | None = None     # "text" (default) | "value" | "<attr-name>"
+    # Assertion-specific
+    assertion_type: ConditionType | None = None      # For ASSERT: type of assertion
+    assertion_expected: str | None = None            # For ASSERT: expected value
 
 
 class CNLConditionalBlock(BaseModel):
