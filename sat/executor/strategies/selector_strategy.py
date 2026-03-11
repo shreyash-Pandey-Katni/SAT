@@ -143,19 +143,32 @@ class SelectorStrategy(ResolutionStrategy):
         if s.placeholder:
             yield root.get_by_placeholder(s.placeholder, exact=True)
 
-        # 6. Exact text (for buttons / links)
+        # 6. Exact text (for buttons / links / other text elements)
         if s.text_content and s.tag_name in ("button", "a"):
             yield root.get_by_text(s.text_content, exact=True)
+        elif s.text_content and s.tag_name not in ("input", "select", "textarea"):
+            # Fallback text match for spans, divs, headings, etc.
+            yield root.get_by_text(s.text_content, exact=True)
 
-        # 7. name attribute
+        # 6b. Substring text fallback (lower priority).
+        # Catches near-misses like "Payment Information" matching
+        # "Payment Information:" in the DOM.
+        if s.text_content and s.tag_name not in ("input", "select", "textarea"):
+            yield root.get_by_text(s.text_content, exact=False)
+
+        # 7. CSS class (identifier-like labels, e.g. "product_sort_container")
+        if s.class_name:
+            yield root.locator(f".{_esc(s.class_name)}")
+
+        # 8. name attribute
         if s.name:
             yield root.locator(f'[name="{s.name}"]')
 
-        # 8. Recorded CSS selector (Playwright's CSS engine pierces shadow roots)
+        # 9. Recorded CSS selector (Playwright's CSS engine pierces shadow roots)
         if s.css:
             yield root.locator(s.css)
 
-        # 9. XPath — only for non-shadow-DOM elements (XPath can't pierce shadow roots)
+        # 10. XPath — only for non-shadow-DOM elements (XPath can't pierce shadow roots)
         if s.xpath and not s.in_shadow_dom:
             yield root.locator(f"xpath={s.xpath}")
 

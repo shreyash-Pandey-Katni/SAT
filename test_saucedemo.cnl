@@ -1,0 +1,67 @@
+# ============================================================================
+# Comprehensive E-commerce Purchase Flow Test
+# ============================================================================
+# Test Site: https://www.saucedemo.com
+# Purpose: Validate complete shopping flow from login to order completion
+# ============================================================================
+
+# PHASE 1: Login and Authentication
+Navigate to "https://www.saucedemo.com";
+Type "standard_user" in "Username" TextField;
+Type "secret_sauce" in "Password" TextField;
+Click "Login" Button;
+Assert "Products" Text is visible;
+
+# PHASE 2: Product Browsing and Data Storage
+Assert "Sauce Labs Backpack" Text is visible;
+Store text of "Sauce Labs Backpack" Text as "productName";
+Store text of "$29.99" Text as "productPrice";
+
+# PHASE 3: Add to Cart with Conditional Logic
+If "Add to cart" Button is visible {
+    Click "Add to cart" Button;
+    Assert "Remove" Button is visible;
+} Else {
+    Assert "Remove" Button is visible;
+};
+
+Assert "1" Text is visible;
+
+# PHASE 4: Cart Management
+Click "shopping_cart_container" Element;
+Assert "Your Cart" Text is visible;
+Assert text of "Sauce Labs Backpack" Text contains "${productName}";
+Assert text of "$29.99" Text contains "${productPrice}";
+Assert "1" Text is visible;
+
+# PHASE 5: Checkout Process - Information Entry
+Click "Checkout" Button;
+Assert "Checkout: Your Information" Text is visible;
+Type "John" in "First Name" TextField;
+Type "Doe" in "Last Name" TextField;
+Type "12345" in "Zip/Postal Code" TextField;
+Click "Continue" Button;
+
+# PHASE 6: Order Review and Conditional Validation
+Assert "Checkout: Overview" Text is visible;
+Assert text of "Sauce Labs Backpack" Text contains "${productName}";
+If "Payment Information" Text is visible {
+    Assert text of "Payment Information" Text contains "Payment";
+    Assert "Shipping Information" Text is visible;
+} Else {
+    Assert "Total" Text is visible;
+};
+Assert "Total: $32.39" Text is visible;
+
+# PHASE 7: Order Completion
+Click "Finish" Button;
+Assert "Checkout: Complete!" Text is visible;
+Assert "Thank you for your order!" Text is visible;
+Assert text of "Your order has been dispatched" Text contains "dispatched";
+Store text of "Thank you for your order!" Text as "confirmationMessage";
+Assert "Pony Express" Text is visible;
+
+# PHASE 8: Post-Order Navigation
+Click "Back Home" Button;
+Assert "Products" Text is visible;
+Assert "Sauce Labs Backpack" Text is visible;

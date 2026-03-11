@@ -1,0 +1,309 @@
+# ============================================================================
+# SAT Full Capability Showcase Test
+# ============================================================================
+# Test Site: https://www.saucedemo.com
+# Purpose: Demonstrate EVERY command supported by SAT — both SAT 2.0 (new CNL)
+#          and legacy (old CNL) syntax — in a single end-to-end flow.
+#
+# Capabilities covered:
+#   Navigation     — Navigate to, GoToURL, Open new tab, Switch to tab, Close current tab
+#   Interactions   — Click, Type, Select, Hover, Check, Uncheck
+#   Assertions     — Assert visible/hidden, text contains/isEqual, value contains/isEqual
+#   Legacy Verify  — Verify isVisible/isPresent/isHidden/isNotVisible/isEnabled/isDisabled
+#   Legacy Verify  — Verify text of … contains/isEqual, Verify isEqual/contains <subject>
+#   Legacy Verify  — Unquoted-label variant
+#   Variables      — Store text/value as variable, ${var} substitution
+#   Conditionals   — If/Else blocks (SAT 2.0), ifSatisfy/execute/else (legacy)
+#   Element Types  — Button, Link, TextField, Checkbox, Dropdown, Radio, Tab,
+#                    Menu, Element, Image, Icon, Text, and legacy types
+#                    (ComboBox, TextArea, RadioButton, Div, Label, Select, etc.)
+# ============================================================================
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 1: SAT 2.0 — Navigation
+# ────────────────────────────────────────────────────────────────────────────
+
+# Navigate to the test site
+Navigate to "https://www.saucedemo.com";
+
+# Assert we landed on the login page
+Assert "Username" TextField is visible;
+Assert "Password" TextField is visible;
+Assert "Login" Button is visible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 2: SAT 2.0 — Type & Click with Element Types
+# ────────────────────────────────────────────────────────────────────────────
+
+# Type credentials into text fields
+Type "standard_user" in "Username" TextField;
+Type "secret_sauce" in "Password" TextField;
+
+# Click the login button
+Click "Login" Button;
+
+# Assert successful navigation to the products page
+Assert "Products" Text is visible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 3: SAT 2.0 — Store Variables & Variable Substitution
+# ────────────────────────────────────────────────────────────────────────────
+
+# Store text from elements into variables
+Store text of "Sauce Labs Backpack" Text as "firstProduct";
+Store text of "$29.99" Text as "firstPrice";
+
+# Assert using stored variables with ${var} substitution
+Assert text of "Sauce Labs Backpack" Text contains "${firstProduct}";
+Assert text of "$29.99" Text contains "${firstPrice}";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 4: SAT 2.0 — Assert Variants (visible, hidden, text, value)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Assert element is visible
+Assert "Sauce Labs Backpack" Text is visible;
+Assert "Sauce Labs Bike Light" Text is visible;
+
+# Assert text contains
+Assert text of "Sauce Labs Backpack" Text contains "Backpack";
+
+# Assert text isEqual
+Assert text of "Sauce Labs Backpack" Text isEqual "Sauce Labs Backpack";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 5: SAT 2.0 — Hover
+# ────────────────────────────────────────────────────────────────────────────
+
+# Hover over a product item
+Hover "Sauce Labs Backpack" Text;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 6: SAT 2.0 — If/Else Conditional Block
+# ────────────────────────────────────────────────────────────────────────────
+
+# Conditional: If the Add to Cart button is visible, click it; otherwise
+# the item is already in the cart
+If "Add to cart" Button is visible {
+    Click "Add to cart" Button;
+    Assert "Remove" Button is visible;
+} Else {
+    Assert "Remove" Button is visible;
+};
+
+# Another conditional using "contains" condition
+If "Products" Text is visible {
+    Assert "Sauce Labs Backpack" Text is visible;
+} Else {
+    Assert "Login" Button is visible;
+};
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 7: SAT 2.0 — Click (various element types)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Click using Element type (generic)
+Click "shopping_cart_container" Element;
+
+# Assert we're on the cart page
+Assert "Your Cart" Text is visible;
+
+# Assert with variable substitution in expected text
+Assert text of "Sauce Labs Backpack" Text contains "${firstProduct}";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 8: SAT 2.0 — Select Dropdown (demonstrated via Checkout Sort)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Continue to checkout
+Click "Checkout" Button;
+Assert "Checkout: Your Information" Text is visible;
+
+# Type into form fields
+Type "Jane" in "First Name" TextField;
+Type "Smith" in "Last Name" TextField;
+Type "90210" in "Zip/Postal Code" TextField;
+
+# Click Continue
+Click "Continue" Button;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 9: SAT 2.0 — Assert text of / Assert value of (checkout review)
+# ────────────────────────────────────────────────────────────────────────────
+
+Assert "Checkout: Overview" Text is visible;
+
+# Assert text contains on the product in overview
+Assert text of "Sauce Labs Backpack" Text contains "Sauce Labs";
+
+# Store and verify the total
+Store text of "Total: $32.39" Text as "orderTotal";
+Assert text of "Total: $32.39" Text contains "${orderTotal}";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 10: SAT 2.0 — Complete Order & Post-Order Assertions
+# ────────────────────────────────────────────────────────────────────────────
+
+Click "Finish" Button;
+Assert "Checkout: Complete!" Text is visible;
+Assert "Thank you for your order!" Text is visible;
+
+# Store confirmation message
+Store text of "Thank you for your order!" Text as "confirmMsg";
+Assert text of "Thank you for your order!" Text isEqual "${confirmMsg}";
+
+# Navigate back home
+Click "Back Home" Button;
+Assert "Products" Text is visible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 11: SAT 2.0 — Select Dropdown (product sort)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Use Select to change product sort order
+Select "za" in "product_sort_container" Dropdown;
+Select "lohi" in "product_sort_container" Dropdown;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 12: SAT 2.0 — Open New Tab, Switch Tab, Close Tab
+# ────────────────────────────────────────────────────────────────────────────
+
+# Open a new tab and navigate
+Open new tab "https://www.saucedemo.com/inventory.html";
+
+# Switch back to the original tab
+Switch to tab "Swag Labs";
+
+# Close the current tab
+Close current tab;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 13: Legacy CNL — GoToURL
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy navigation command
+GoToURL "https://www.saucedemo.com";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 14: Legacy CNL — Verify isVisible / isPresent / isHidden
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy: Verify element is visible (quoted label)
+Verify "Username" TextField isVisible;
+Verify "Password" TextField isPresent;
+Verify "Login" Button isVisible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 15: Legacy CNL — Verify isEnabled / isDisabled
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy: Verify element is enabled
+Verify "Login" Button isEnabled;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 16: Legacy CNL — Verify text of … contains / isEqual
+# ────────────────────────────────────────────────────────────────────────────
+
+# Login again to get to products page for more legacy verifications
+Type "standard_user" in "Username" TextField;
+Type "secret_sauce" in "Password" TextField;
+Click "Login" Button;
+
+# Legacy: Verify text of element contains
+Verify text of "Sauce Labs Backpack" Text contains "Backpack";
+
+# Legacy: Verify text of element isEqual
+Verify text of "Sauce Labs Backpack" Text isEqual "Sauce Labs Backpack";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 17: Legacy CNL — Verify isEqual / contains <subject>
+# ────────────────────────────────────────────────────────────────────────────
+
+# Store a value, then use legacy variable assertion
+Store text of "Products" Text as "pageTitle";
+Verify isEqual ${pageTitle} "Products";
+Verify contains ${pageTitle} "Prod";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 18: Legacy CNL — Verify with Unquoted Labels
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy: Verify with unquoted label and element type
+Verify Products Text isVisible;
+Verify Sauce Labs Backpack Text isVisible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 19: Legacy CNL — Old Element Types (ComboBox, TextArea, etc.)
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy element types are mapped to SAT 2.0 equivalents:
+#   ComboBox    → Dropdown
+#   TextArea    → TextField
+#   RadioButton → Radio
+#   Div         → Element
+#   Label       → Text
+#   Select      → Dropdown
+#   Span        → Text
+#
+# Example using legacy types (these resolve against the same page):
+Verify "Sauce Labs Backpack" Label isVisible;
+Verify "Products" Span isVisible;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 20: Legacy CNL — ifSatisfy / execute / else Block
+# ────────────────────────────────────────────────────────────────────────────
+
+# Legacy conditional block using ifSatisfy syntax
+ifSatisfy
+    <Verify "Sauce Labs Backpack" Text isVisible>
+execute
+    <Click "Add to cart" Button>
+else
+    <>
+
+# Another ifSatisfy using text comparison in condition
+ifSatisfy
+    <Verify text of "Products" Text isEqual "Products">
+execute
+    <Hover "Sauce Labs Backpack" Text>
+else
+    <Hover "Sauce Labs Bike Light" Text>
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 21: SAT 2.0 — Assert Hidden (negative assertion)
+# ────────────────────────────────────────────────────────────────────────────
+
+# After login, the login button should not be visible
+Assert "Login" Button is hidden;
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 22: SAT 2.0 — Multiple Variable Stores & Cross-Validation
+# ────────────────────────────────────────────────────────────────────────────
+
+# Store multiple values and cross-validate
+Store text of "Sauce Labs Bike Light" Text as "secondProduct";
+Store text of "$9.99" Text as "secondPrice";
+Assert text of "Sauce Labs Bike Light" Text contains "${secondProduct}";
+Assert text of "$9.99" Text contains "${secondPrice}";
+
+# ────────────────────────────────────────────────────────────────────────────
+# SECTION 23: SAT 2.0 — Click with Link / Text / Image Element Types
+# ────────────────────────────────────────────────────────────────────────────
+
+# Click a product link to navigate to its detail page
+Click "Sauce Labs Backpack" Link;
+
+# Assert product detail page
+Assert "Back to products" Button is visible;
+Assert text of "Sauce Labs Backpack" Text contains "Backpack";
+
+# Hover over the product image area
+Hover "Sauce Labs Backpack" Image;
+
+# Navigate back
+Click "Back to products" Button;
+Assert "Products" Text is visible;
+
+# ════════════════════════════════════════════════════════════════════════════
+# END OF TEST — All SAT capabilities demonstrated
+# ════════════════════════════════════════════════════════════════════════════

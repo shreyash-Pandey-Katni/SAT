@@ -22,6 +22,7 @@ auto-heal if the page changes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -328,8 +329,16 @@ class CNLRunner:
         """Return a copy of *step* with ``${var}`` replaced in value fields."""
         new_value = var_ctx.substitute(step.value) if step.value else step.value
         new_query = var_ctx.substitute(step.element_query) if step.element_query else step.element_query
-        if new_value != step.value or new_query != step.element_query:
-            return step.model_copy(update={"value": new_value, "element_query": new_query})
+        new_assert_exp = var_ctx.substitute(step.assertion_expected) if step.assertion_expected else step.assertion_expected
+        updates: dict[str, str | None] = {}
+        if new_value != step.value:
+            updates["value"] = new_value
+        if new_query != step.element_query:
+            updates["element_query"] = new_query
+        if new_assert_exp != step.assertion_expected:
+            updates["assertion_expected"] = new_assert_exp
+        if updates:
+            return step.model_copy(update=updates)
         return step
 
     # ------------------------------------------------------------------
@@ -452,6 +461,128 @@ class CNLRunner:
         return msg
 
     # ------------------------------------------------------------------
+    # Text-visibility fast-path (bypasses VLM to avoid hallucination)
+    # ------------------------------------------------------------------
+
+    async def _assert_text_visibility(
+        self,
+        step: CNLStep,
+        page: Page,
+        screenshots_dir: Path,
+        test_id: str,
+        base: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Check element visibility directly via the DOM.
+
+        For ``Assert "X" <Type> is visible/hidden`` the normal resolution
+        chain (selector → embedding → VLM) can hallucinate, especially
+        the VLM which may claim elements exist when they do not.  Instead
+        we search the live DOM using Playwright's built-in locators.
+        """
+        query = step.element_query or ""
+        # Strip the type-hint suffix from the query.
+        if step.element_type_hint and query.lower().endswith(
+            step.element_type_hint.lower()
+        ):
+            query = query[: -len(step.element_type_hint)].rstrip()
+
+        hint = (step.element_type_hint or "").lower()
+
+        # Map hint to Playwright role for role-based locators.
+        _HINT_TO_ROLE: dict[str, str] = {
+            "button": "button",
+            "link": "link",
+            "checkbox": "checkbox",
+            "radio": "radio",
+            "textbox": "textbox",
+            "input": "textbox",
+            "dropdown": "combobox",
+            "combobox": "combobox",
+            "heading": "heading",
+            "image": "img",
+            "img": "img",
+        }
+
+        visible = False
+
+        # 1) Try role-based locator first (for typed hints like Button, Link).
+        role = _HINT_TO_ROLE.get(hint)
+        if role and not visible:
+            loc = page.get_by_role(role, name=query, exact=True)
+            if await loc.count() > 0:
+                visible = await loc.first.is_visible()
+            if not visible:
+                loc = page.get_by_role(role, name=query, exact=False)
+                if await loc.count() > 0:
+                    visible = await loc.first.is_visible()
+
+        # 2) Try general text match (covers "Text" hint and as fallback).
+        if not visible:
+            loc = page.get_by_text(query, exact=True)
+            if await loc.count() > 0:
+                visible = await loc.first.is_visible()
+            if not visible:
+                loc = page.get_by_text(query, exact=False)
+                if await loc.count() > 0:
+                    visible = await loc.first.is_visible()
+
+        # 3) Also check image alt text (e.g. <img alt="Pony Express">).
+        if not visible:
+            alt_loc = page.get_by_alt_text(query, exact=True)
+            if await alt_loc.count() == 0:
+                alt_loc = page.get_by_alt_text(query, exact=False)
+            if await alt_loc.count() > 0:
+                visible = await alt_loc.first.is_visible()
+
+        # 4) Try label/placeholder for form elements.
+        if not visible and hint in ("textbox", "input", "dropdown", "combobox"):
+            loc = page.get_by_label(query, exact=False)
+            if await loc.count() > 0:
+                visible = await loc.first.is_visible()
+
+        is_vis = step.assertion_type == ConditionType.IS_VISIBLE
+        passed = visible if is_vis else not visible
+
+        base["metadata"] = {
+            "assertion_type": step.assertion_type.value if step.assertion_type else None,
+            "assertion_expected": query,
+            "assertion_actual": "visible" if visible else "hidden",
+            "assertion_result": "passed" if passed else "failed",
+            "fast_path": True,
+        }
+
+        # Screenshot
+        scr_path = screenshots_dir / f"step_{step.step_number:04d}.png"
+        try:
+            await page.screenshot(path=str(scr_path), type="png")
+            base["screenshot_path"] = (
+                f"recordings/{test_id}/screenshots/step_{step.step_number:04d}.png"
+            )
+        except Exception:
+            pass
+
+        if passed:
+            logger.info(
+                "  → assertion passed: %s (text fast-path)",
+                step.assertion_type.value,
+            )
+        else:
+            error_msg = self._format_assertion_error(
+                step.step_number,
+                step.raw_cnl,
+                step.assertion_type,
+                query,
+                "visible" if visible else "hidden",
+            )
+            logger.error(
+                "  → assertion failed: %s (text fast-path)",
+                step.assertion_type.value,
+            )
+            raise AssertionError(error_msg)
+
+        return base
+
+    # ------------------------------------------------------------------
     # Per-step execution
     # ------------------------------------------------------------------
 
@@ -523,6 +654,20 @@ class CNLRunner:
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             return base
 
+        # ── Visibility fast-path ─────────────────────────────────────────
+        # For "Assert ... is visible/hidden", use Playwright's locators
+        # directly.  This is fast, deterministic, and avoids VLM
+        # hallucination on presence checks (VLM tends to "see" elements
+        # that don't actually exist).
+        if (
+            step.action_type == ActionType.ASSERT
+            and step.assertion_type
+            in (ConditionType.IS_VISIBLE, ConditionType.IS_HIDDEN)
+        ):
+            return await self._assert_text_visibility(
+                step, page, screenshots_dir, test_id, base,
+            )
+
         # ── Element actions — delegate to StrategyChain ──────────────────
         element, method, score = await self._resolve_element(page, step)
         if element is None:
@@ -581,6 +726,8 @@ class CNLRunner:
         elif step.action_type == ActionType.SELECT:
             value = step.value or ""
             mode = getattr(step, "select_mode", None) or "text"
+            # Ensure we have the actual <select> element, not a wrapper
+            element = await self._ensure_select(page, element)
             if mode == "index":
                 await element.select_option(index=int(value))
             elif mode == "value":
@@ -712,6 +859,44 @@ class CNLRunner:
 
         return element
 
+    @staticmethod
+    async def _ensure_select(
+        page: Page, element: ElementHandle,
+    ) -> ElementHandle:
+        """If *element* is not a ``<select>``, look for one nearby.
+
+        The CNL may target a wrapper ``<div>`` around a ``<select>`` or
+        a label element.  Walk into descendants or up to 3 ancestors to
+        find the real ``<select>`` so ``select_option()`` succeeds.
+        """
+        tag = await page.evaluate("(el) => el.tagName", element)
+        if tag and tag.upper() == "SELECT":
+            return element
+
+        js = """(el) => {
+            // 1. Descendant <select>
+            var child = el.querySelector('select');
+            if (child) return child;
+
+            // 2. Walk up max 3 ancestors
+            var parent = el.parentElement;
+            for (var i = 0; i < 3 && parent; i++, parent = parent.parentElement) {
+                var found = parent.querySelector('select');
+                if (found) return found;
+            }
+            return null;
+        }"""
+        try:
+            handle = await page.evaluate_handle(js, element)
+            better = handle.as_element()
+            if better:
+                logger.debug("_ensure_select: redirected to real <select> element")
+                return better
+        except Exception as exc:
+            logger.debug("_ensure_select JS error: %s", exc)
+
+        return element
+
     # ------------------------------------------------------------------
     # Element resolution via StrategyChain
     # ------------------------------------------------------------------
@@ -765,25 +950,61 @@ class CNLRunner:
         # For text-input types the label is typically a placeholder;
         # for others it is visible text content.
         is_input = hint in ("textfield", "dropdown", "checkbox", "radio")
+
+        # If the label looks like a CSS / HTML identifier (contains
+        # underscores or hyphens, no spaces) rather than natural-
+        # language text, treat it as a potential element ID and
+        # data-testid.  E.g. "shopping_cart_container" → try
+        # #shopping_cart_container and [data-testid=...].
+        id_candidate: str | None = None
+        if label and " " not in label and ("_" in label or "-" in label):
+            id_candidate = label.lstrip("#")
+
         selector_hint = SelectorInfo(
             tag_name=tag or "unknown",
+            id=id_candidate,
+            data_testid=id_candidate,
+            class_name=id_candidate,
             placeholder=label if is_input else None,
             text_content=None if is_input else label,
             role=role,
         )
 
-        stub = RecordedAction(
-            step_number=step.step_number,
-            action_type=step.action_type,
-            url=page.url,
-            tab_id=str(id(page)),
-            cnl_step=step.element_query or step.raw_cnl,
-            selector=selector_hint,
-        )
-        element, method, score, _trace = (
-            await self._strategy_chain.resolve_element_with_trace(page, stub)
-        )
-        return element, method, score
+        # Retry loop: the page may still be rendering after a navigation-
+        # triggering click.  Give the DOM up to ~5 s to settle before
+        # giving up entirely.
+        max_resolve_wait = 5.0          # seconds
+        poll_interval    = 0.5          # seconds
+        elapsed          = 0.0
+
+        while True:
+            stub = RecordedAction(
+                step_number=step.step_number,
+                action_type=step.action_type,
+                url=page.url,
+                tab_id=str(id(page)),
+                cnl_step=step.element_query or step.raw_cnl,
+                selector=selector_hint,
+            )
+            element, method, score, _trace = (
+                await self._strategy_chain.resolve_element_with_trace(
+                    page, stub,
+                )
+            )
+            if element is not None:
+                return element, method, score
+
+            # All strategies failed — retry after a short wait
+            elapsed += poll_interval
+            if elapsed > max_resolve_wait:
+                return None, method, score
+
+            logger.debug(
+                "  ⏳ element not found yet for step %d, retrying "
+                "in %.1fs (%.1f/%.1fs)",
+                step.step_number, poll_interval, elapsed, max_resolve_wait,
+            )
+            await asyncio.sleep(poll_interval)
 
     # ------------------------------------------------------------------
     # Selector extraction from live element

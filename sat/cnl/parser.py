@@ -320,8 +320,8 @@ _IF_RE = re.compile(
     r'\s*\{\s*$',
     re.IGNORECASE,
 )
-_ELSE_RE = re.compile(r'^\s*\}\s*Else\s*\{\s*$', re.IGNORECASE)
-_CLOSE_BRACE_RE = re.compile(r'^\s*\}\s*$')
+_ELSE_RE = re.compile(r'^\s*\}\s*Else\s*\{\s*;?\s*$', re.IGNORECASE)
+_CLOSE_BRACE_RE = re.compile(r'^\s*\}\s*;?\s*$')
 
 # ── Old CNL IfSatisfy block regex ────────────────────────────────────────────
 _IFSATISFY_RE = re.compile(r'^\s*ifSatisfy\s*$', re.IGNORECASE)
@@ -1085,9 +1085,16 @@ def _build_step(
 
 
 def _build_query(label: str, el_type: str | None) -> str:
-    """Build the element query string from label and optional element type."""
-    if el_type and _resolve_type(el_type) is not None:
-        return f"{label} {el_type}"
+    """Build the element query string from label and optional element type.
+
+    Uses the *normalised* (SAT 2.0 canonical) type name so that the
+    runner's suffix-stripping logic ``query.endswith(type_hint)`` works
+    correctly even for legacy types like ``Label`` → ``Text``.
+    """
+    if el_type:
+        normalised = _normalise_type(el_type)
+        if normalised is not None:
+            return f"{label} {normalised}"
     return label
 
 
