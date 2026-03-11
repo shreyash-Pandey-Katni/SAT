@@ -10,6 +10,19 @@ from sat.core.models import ActionType
 
 
 # ---------------------------------------------------------------------------
+# Relative direction support
+# ---------------------------------------------------------------------------
+
+
+class RelativeDirection(str, Enum):
+    """Direction keyword for locating an element relative to an anchor."""
+    FOLLOWING = "following"
+    PRECEDING = "preceding"
+    BELOW = "below"
+    ABOVE = "above"
+
+
+# ---------------------------------------------------------------------------
 # Conditional support
 # ---------------------------------------------------------------------------
 
@@ -53,6 +66,10 @@ class CNLStep(BaseModel):
     # Assertion-specific
     assertion_type: ConditionType | None = None      # For ASSERT: type of assertion
     assertion_expected: str | None = None            # For ASSERT: expected value
+    # Relative-element support  (e.g. Click "Submit" Button below "Email" Label;)
+    relative_direction: RelativeDirection | None = None   # following / preceding / below / above
+    anchor_query: str | None = None                      # Resolved query for anchor element
+    anchor_type_hint: str | None = None                  # Element-type hint for anchor
 
 
 class CNLConditionalBlock(BaseModel):

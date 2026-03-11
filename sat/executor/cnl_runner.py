@@ -6,15 +6,16 @@ Flow
 1. Parse CNL text → list of :class:`CNLStep` + conditional blocks.
 2. Open browser → navigate to *start_url*.
 3. For each CNL step (with conditional evaluation and variable substitution):
-   a) Resolve the target element via the **StrategyChain**
-      (Selector → Embedding → VLM) — the same pipeline the Executor uses.
+    a) Resolve the target element via the **StrategyChain**
+        (Selector → Embedding → OCR → VLM) — the same pipeline the Executor uses.
    b) Extract a selector snapshot for future fast-path replay.
    c) Perform the action (click / type / select / store / …).
 4. Package every captured step into a :class:`RecordedAction` and return
    a complete :class:`RecordedTest` ready for storage.
 
 On the *first* run no selectors exist, so ``SelectorStrategy`` falls through
-and ``EmbeddingStrategy`` (or ``VLMStrategy``) finds elements semantically.
+and semantic fallbacks (``EmbeddingStrategy`` / ``OCRStrategy`` / ``VLMStrategy``)
+find elements semantically.
 The discovered selectors are persisted in the resulting test so that
 subsequent re-executions via the **Executor** use fast CSS lookups and
 auto-heal if the page changes.
@@ -36,10 +37,12 @@ from sat.cnl.models import (
     CNLCondition,
     CNLStep,
     ConditionType,
+    RelativeDirection,
 )
 from sat.cnl.parser import parse_cnl
 from sat.cnl.variables import VariableContext, load_variables
 from sat.config import SATConfig
+from sat.constants import INTERACTABLE_SELECTORS
 from sat.core.models import (
     ActionType,
     CNLStep as CoreCNLStep,
@@ -49,10 +52,19 @@ from sat.core.models import (
     SelectorInfo,
 )
 from sat.core.playwright_manager import PlaywrightManager
+from sat.executor.relative_resolver import (
+    filter_by_dom_order,
+    filter_by_visual_direction,
+    get_bounding_box,
+    is_visual_direction,
+    CandidateWithRect,
+)
 from sat.executor.strategies.embedding_strategy import EmbeddingStrategy
+from sat.executor.strategies.ocr_strategy import OCRStrategy
 from sat.executor.strategies.selector_strategy import SelectorStrategy
 from sat.executor.strategies.vlm_strategy import VLMStrategy
 from sat.executor.strategy_chain import StrategyChain
+from sat.services.dom_parser import DOMParser
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +149,7 @@ class CNLRunner:
         strategies_map = {
             "selector": lambda: SelectorStrategy(timeout_ms=ec.selector.timeout_ms),
             "embedding": lambda: EmbeddingStrategy(config=ec.embedding),
+                "ocr": lambda: OCRStrategy(config=ec.ocr),
             "vlm": lambda: VLMStrategy(config=ec.vlm),
         }
         self._strategy_chain = StrategyChain([
@@ -478,7 +491,18 @@ class CNLRunner:
         chain (selector → embedding → VLM) can hallucinate, especially
         the VLM which may claim elements exist when they do not.  Instead
         we search the live DOM using Playwright's built-in locators.
+
+        For **IS_VISIBLE** assertions the method uses Playwright's ``expect``
+        API which polls the DOM until the element appears or the timeout
+        expires.  This makes post-navigation assertions (e.g. "Assert Logout
+        is visible" right after clicking Login) reliable without any explicit
+        sleep/wait step in the CNL script.
+
+        For **IS_HIDDEN** assertions an immediate snapshot is used — waiting
+        for absence would be misleading.
         """
+        from playwright.async_api import expect as pw_expect
+
         query = step.element_query or ""
         # Strip the type-hint suffix from the query.
         if step.element_type_hint and query.lower().endswith(
@@ -503,42 +527,88 @@ class CNLRunner:
             "img": "img",
         }
 
+        is_vis = step.assertion_type == ConditionType.IS_VISIBLE
         visible = False
 
-        # 1) Try role-based locator first (for typed hints like Button, Link).
-        role = _HINT_TO_ROLE.get(hint)
-        if role and not visible:
-            loc = page.get_by_role(role, name=query, exact=True)
-            if await loc.count() > 0:
-                visible = await loc.first.is_visible()
-            if not visible:
-                loc = page.get_by_role(role, name=query, exact=False)
+        # ── IS_VISIBLE: use Playwright's expect() which polls with retry ──────
+        # This makes assertions immediately after navigation (e.g. form submit
+        # followed by redirect) reliable.  The timeout is intentionally short
+        # so that assertions on genuinely absent elements fail promptly.
+        if is_vis:
+            role = _HINT_TO_ROLE.get(hint)
+            _wait_ms = 5000  # poll for up to 5 s before declaring absent
+            for loc in [
+                *(
+                    [page.get_by_role(role, name=query, exact=True),
+                     page.get_by_role(role, name=query, exact=False)]
+                    if role else []
+                ),
+                page.get_by_text(query, exact=True),
+                page.get_by_text(query, exact=False),
+                *(
+                    [page.get_by_alt_text(query, exact=True)]
+                    if not role else []
+                ),
+                *(
+                    [page.get_by_label(query, exact=False)]
+                    if hint in ("textbox", "input", "dropdown", "combobox")
+                    else []
+                ),
+            ]:
+                if visible:
+                    break
+                try:
+                    await pw_expect(loc.first).to_be_visible(timeout=_wait_ms)
+                    # Confirmed visible — no need to check further
+                    visible = True
+                except Exception:
+                    # Element not found or not visible within timeout; try next
+                    pass
+                else:
+                    break
+                # reduce remaining budget per attempt so total stays ≤ _wait_ms
+                _wait_ms = 500  # subsequent locators get a very short window
+
+            # Fall straight through to the final pass/fail logic below.
+            # Skip the IS_HIDDEN snapshot block.
+
+        else:
+            # ── IS_HIDDEN: snapshot check (do NOT poll — absence is instant) ──
+            role = _HINT_TO_ROLE.get(hint)
+
+            # 1) Try role-based locator first (for typed hints like Button, Link).
+            if role and not visible:
+                loc = page.get_by_role(role, name=query, exact=True)
                 if await loc.count() > 0:
                     visible = await loc.first.is_visible()
+                if not visible:
+                    loc = page.get_by_role(role, name=query, exact=False)
+                    if await loc.count() > 0:
+                        visible = await loc.first.is_visible()
 
-        # 2) Try general text match (covers "Text" hint and as fallback).
-        if not visible:
-            loc = page.get_by_text(query, exact=True)
-            if await loc.count() > 0:
-                visible = await loc.first.is_visible()
+            # 2) Try general text match (covers "Text" hint and as fallback).
             if not visible:
-                loc = page.get_by_text(query, exact=False)
+                loc = page.get_by_text(query, exact=True)
                 if await loc.count() > 0:
                     visible = await loc.first.is_visible()
+                if not visible:
+                    loc = page.get_by_text(query, exact=False)
+                    if await loc.count() > 0:
+                        visible = await loc.first.is_visible()
 
-        # 3) Also check image alt text (e.g. <img alt="Pony Express">).
-        if not visible:
-            alt_loc = page.get_by_alt_text(query, exact=True)
-            if await alt_loc.count() == 0:
-                alt_loc = page.get_by_alt_text(query, exact=False)
-            if await alt_loc.count() > 0:
-                visible = await alt_loc.first.is_visible()
+            # 3) Also check image alt text (e.g. <img alt="Pony Express">).
+            if not visible:
+                alt_loc = page.get_by_alt_text(query, exact=True)
+                if await alt_loc.count() == 0:
+                    alt_loc = page.get_by_alt_text(query, exact=False)
+                if await alt_loc.count() > 0:
+                    visible = await alt_loc.first.is_visible()
 
-        # 4) Try label/placeholder for form elements.
-        if not visible and hint in ("textbox", "input", "dropdown", "combobox"):
-            loc = page.get_by_label(query, exact=False)
-            if await loc.count() > 0:
-                visible = await loc.first.is_visible()
+            # 4) Try label/placeholder for form elements.
+            if not visible and hint in ("textbox", "input", "dropdown", "combobox"):
+                loc = page.get_by_label(query, exact=False)
+                if await loc.count() > 0:
+                    visible = await loc.first.is_visible()
 
         is_vis = step.assertion_type == ConditionType.IS_VISIBLE
         passed = visible if is_vis else not visible
@@ -659,10 +729,14 @@ class CNLRunner:
         # directly.  This is fast, deterministic, and avoids VLM
         # hallucination on presence checks (VLM tends to "see" elements
         # that don't actually exist).
+        # Skip this fast-path when a relative direction is present —
+        # we need the full two-phase resolution to identify the correct
+        # element relative to the anchor.
         if (
             step.action_type == ActionType.ASSERT
             and step.assertion_type
             in (ConditionType.IS_VISIBLE, ConditionType.IS_HIDDEN)
+            and step.relative_direction is None
         ):
             return await self._assert_text_visibility(
                 step, page, screenshots_dir, test_id, base,
@@ -710,12 +784,24 @@ class CNLRunner:
         if step.action_type == ActionType.CLICK:
             await element.click()
             try:
-                # Short wait — most clicks don't trigger full navigations.
-                # Playwright already auto-waits for actionability; this just
-                # covers the rare case of a click that triggers a page load.
-                await page.wait_for_load_state("domcontentloaded", timeout=1500)
-            except Exception:
-                pass
+                # For non-navigating clicks the page is already at
+                # domcontentloaded so this resolves immediately.
+                # For clicks that trigger a page load (e.g. button → SPA
+                # route change) this waits up to 10 s.
+                await page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception as _click_exc:
+                # wait_for_load_state can raise RuntimeError("Event loop
+                # stopped before Future completed") when a form submit causes
+                # a full page reload — the current frame is torn down and the
+                # event listener is never called.  Give the browser extra time
+                # to complete the redirect before the next step inspects the DOM.
+                logger.debug(
+                    "  wait_for_load_state raised after click (%s); "
+                    "sleeping 3 s to allow navigation to settle",
+                    type(_click_exc).__name__,
+                )
+                import asyncio as _asyncio
+                await _asyncio.sleep(3.0)
 
         elif step.action_type == ActionType.TYPE:
             value = step.value or ""
@@ -908,7 +994,7 @@ class CNLRunner:
         "button":    ("button", "button"),
         "link":      ("a", "link"),
         "checkbox":  ("input", "checkbox"),
-        "dropdown":  ("select", None),
+        "dropdown":  ("select", "combobox"),
         "radio":     ("input", "radio"),
         "tab":       ("button", "tab"),
         "menu":      ("button", "menuitem"),
@@ -921,6 +1007,22 @@ class CNLRunner:
         self, page: Page, step: CNLStep,
     ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
         """Resolve a CNL step's target element through the StrategyChain.
+
+        If the step has a ``relative_direction`` set, delegates to the
+        two-phase :meth:`_resolve_element_relative` flow.  Otherwise
+        uses the standard single-element resolution.
+        """
+        # ── Two-phase relative resolution ────────────────────────────
+        if step.relative_direction is not None:
+            return await self._resolve_element_relative(page, step)
+
+        # ── Standard (non-relative) resolution ───────────────────────
+        return await self._resolve_element_standard(page, step)
+
+    async def _resolve_element_standard(
+        self, page: Page, step: CNLStep,
+    ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
+        """Standard single-element resolution via the StrategyChain.
 
         Builds a stub :class:`RecordedAction` enriched with a
         :class:`SelectorInfo` derived from the parsed CNL fields
@@ -951,13 +1053,16 @@ class CNLRunner:
         # for others it is visible text content.
         is_input = hint in ("textfield", "dropdown", "checkbox", "radio")
 
-        # If the label looks like a CSS / HTML identifier (contains
-        # underscores or hyphens, no spaces) rather than natural-
-        # language text, treat it as a potential element ID and
+        # If the label looks like a CSS / HTML identifier rather than
+        # natural-language text, treat it as a potential element ID and
         # data-testid.  E.g. "shopping_cart_container" → try
         # #shopping_cart_container and [data-testid=...].
+        # Also accept single-word lowercase labels (e.g. "dropdown")
+        # since those are frequently element IDs.
         id_candidate: str | None = None
-        if label and " " not in label and ("_" in label or "-" in label):
+        if label and " " not in label and (
+            "_" in label or "-" in label or label == label.lower()
+        ):
             id_candidate = label.lstrip("#")
 
         selector_hint = SelectorInfo(
@@ -968,6 +1073,14 @@ class CNLRunner:
             placeholder=label if is_input else None,
             text_content=None if is_input else label,
             role=role,
+            # Use the CNL label as the accessible name so that
+            # get_by_role(role, name=label) can match elements whose
+            # accessible name comes from a <label> element, aria-label
+            # attribute, or visible text.  This lets the SelectorStrategy
+            # resolve inputs like "Username" TextField directly via
+            # get_by_role("textbox", name="Username") instead of falling
+            # through to VLM.
+            aria_label=label if label else None,
         )
 
         # Retry loop: the page may still be rendering after a navigation-
@@ -1005,6 +1118,303 @@ class CNLRunner:
                 step.step_number, poll_interval, elapsed, max_resolve_wait,
             )
             await asyncio.sleep(poll_interval)
+
+    # ------------------------------------------------------------------
+    # Relative element resolution (two-phase)
+    # ------------------------------------------------------------------
+
+    async def _resolve_element_relative(
+        self, page: Page, step: CNLStep,
+    ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
+        """Two-phase resolution for relative commands.
+
+        Phase 1: Resolve the **anchor** element using the standard chain.
+        Phase 2: Resolve all **target** candidates, then filter by the
+                 directional relationship to the anchor.
+
+        For **visual directions** (above/below): uses bounding-box
+        geometry from ``getBoundingClientRect()``.
+
+        For **DOM-order directions** (following/preceding): uses
+        ``Node.compareDocumentPosition()``.
+        """
+        direction = step.relative_direction
+        assert direction is not None
+
+        # ── Phase 1: resolve the anchor ──────────────────────────────
+        anchor_step = CNLStep(
+            step_number=0,
+            raw_cnl=f"[anchor] {step.anchor_query or ''}",
+            action_type=ActionType.CLICK,  # irrelevant for resolution
+            element_query=step.anchor_query or "",
+            element_type_hint=step.anchor_type_hint,
+        )
+        anchor_element, _a_method, _a_score = await self._resolve_element_standard(
+            page, anchor_step,
+        )
+        if anchor_element is None:
+            logger.warning(
+                "  ⚠ relative step %d: anchor element '%s' not found",
+                step.step_number, step.anchor_query,
+            )
+            # Fall back to non-relative resolution
+            return await self._resolve_element_standard(page, step)
+
+        logger.info(
+            "  → anchor '%s' resolved via %s",
+            step.anchor_query, _a_method.value,
+        )
+
+        # ── Phase 2: resolve target with directional filter ──────────
+        if is_visual_direction(direction):
+            return await self._resolve_with_visual_filter(
+                page, step, anchor_element, direction,
+            )
+        else:
+            return await self._resolve_with_dom_filter(
+                page, step, anchor_element, direction,
+            )
+
+    async def _resolve_with_visual_filter(
+        self,
+        page: Page,
+        step: CNLStep,
+        anchor: ElementHandle,
+        direction: RelativeDirection,
+    ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
+        """Resolve target using bounding-box visual filtering (above/below).
+
+        Gets all candidates from the EmbeddingStrategy's DOMParser, filters
+        by direction relative to the anchor, then runs the StrategyChain's
+        scoring on the filtered set.  If no candidates match the direction,
+        falls back to standard resolution.
+        """
+        # Get anchor bounding box
+        anchor_rect = await get_bounding_box(page, anchor)
+        if anchor_rect is None:
+            logger.warning(
+                "  ⚠ relative step %d: could not get anchor bounding box, "
+                "falling back to standard resolution",
+                step.step_number,
+            )
+            return await self._resolve_element_standard(page, step)
+
+        logger.debug(
+            "  anchor rect: x=%.0f y=%.0f w=%.0f h=%.0f",
+            anchor_rect["x"], anchor_rect["y"],
+            anchor_rect["width"], anchor_rect["height"],
+        )
+
+        # Get all DOM candidates with their bounding boxes
+        dom_parser = DOMParser()
+        candidates = await dom_parser.extract_candidates(page)
+        if not candidates:
+            return await self._resolve_element_standard(page, step)
+
+        # Build CandidateWithRect list by evaluating each candidate's rect
+        candidates_with_rects: list[CandidateWithRect] = []
+        for cand in candidates:
+            idx = cand["index"]
+            try:
+                el = await page.evaluate_handle(
+                    f"(idx) => document.querySelectorAll('{INTERACTABLE_SELECTORS}')[idx]",
+                    idx,
+                )
+                elem = el.as_element()
+                if elem is None:
+                    continue
+                rect = await get_bounding_box(page, elem)
+                if rect is None:
+                    continue
+                candidates_with_rects.append(CandidateWithRect(
+                    index=idx, element=elem, rect=rect,
+                ))
+            except Exception:
+                continue
+
+        # Filter by visual direction
+        filtered = filter_by_visual_direction(
+            candidates_with_rects, anchor_rect, direction,
+        )
+
+        if not filtered:
+            logger.debug(
+                "  no candidates found %s anchor, falling back",
+                direction.value,
+            )
+            return await self._resolve_element_standard(page, step)
+
+        logger.debug(
+            "  %d candidates %s anchor (from %d total)",
+            len(filtered), direction.value, len(candidates_with_rects),
+        )
+
+        # Score the filtered candidates against the target step's query
+        # using the same matching logic as EmbeddingStrategy
+        target_label = self._extract_target_label(step)
+        best_element: ElementHandle | None = None
+        best_score: float = 0.0
+
+        for cand in filtered:
+            idx = cand["index"]
+            if idx < len(candidates):
+                dom_cand = candidates[idx]
+                score = self._text_score_candidate(target_label, dom_cand)
+                if score > best_score:
+                    best_score = score
+                    best_element = cand["element"]
+
+        if best_element is not None and best_score > 0.3:
+            logger.info(
+                "  → relative resolution: found target %s anchor "
+                "(score=%.4f)",
+                direction.value, best_score,
+            )
+            return best_element, ResolutionMethod.EMBEDDING, best_score
+
+        # Low-confidence — fall back to standard resolution
+        logger.debug(
+            "  relative filter best_score=%.4f too low, falling back",
+            best_score,
+        )
+        return await self._resolve_element_standard(page, step)
+
+    async def _resolve_with_dom_filter(
+        self,
+        page: Page,
+        step: CNLStep,
+        anchor: ElementHandle,
+        direction: RelativeDirection,
+    ) -> tuple[ElementHandle | None, ResolutionMethod, float | None]:
+        """Resolve target using DOM-order filtering (following/preceding).
+
+        First resolves the target via the standard StrategyChain.  If
+        multiple candidates could match, verify that the best candidate
+        has the correct DOM-order relationship with the anchor.  If the
+        best candidate is in the wrong direction, search other candidates.
+        """
+        # Resolve target normally first
+        element, method, score = await self._resolve_element_standard(page, step)
+
+        if element is not None:
+            # Check DOM order relationship
+            matches = await filter_by_dom_order(page, [element], anchor, direction)
+            if matches:
+                logger.info(
+                    "  → relative DOM-order confirmed: target is %s anchor",
+                    direction.value,
+                )
+                return element, method, score
+
+            # The resolved element is in the wrong direction.
+            # Try to find alternative candidates via DOMParser
+            logger.debug(
+                "  resolved element is NOT %s anchor, searching alternatives",
+                direction.value,
+            )
+
+        # Brute-force: get all DOM candidates, filter by direction,
+        # then score by label match
+        dom_parser = DOMParser()
+        candidates = await dom_parser.extract_candidates(page)
+        if not candidates:
+            return element, method, score  # return whatever we had
+
+        target_label = self._extract_target_label(step)
+        alt_elements: list[ElementHandle] = []
+        alt_scores: list[float] = []
+
+        for cand in candidates:
+            txt_score = self._text_score_candidate(target_label, cand)
+            if txt_score < 0.3:
+                continue
+            idx = cand["index"]
+            try:
+                el = await page.evaluate_handle(
+                    f"(idx) => document.querySelectorAll('{INTERACTABLE_SELECTORS}')[idx]",
+                    idx,
+                )
+                elem = el.as_element()
+                if elem is None:
+                    continue
+                alt_elements.append(elem)
+                alt_scores.append(txt_score)
+            except Exception:
+                continue
+
+        if not alt_elements:
+            return element, method, score
+
+        # Filter by DOM order
+        valid = await filter_by_dom_order(page, alt_elements, anchor, direction)
+        if not valid:
+            logger.debug("  no candidates %s anchor in DOM order", direction.value)
+            return element, method, score
+
+        # Pick the highest-scoring valid candidate
+        best_el = None
+        best_sc = 0.0
+        valid_set = set(id(v) for v in valid)
+        for el, sc in zip(alt_elements, alt_scores):
+            if id(el) in valid_set and sc > best_sc:
+                best_sc = sc
+                best_el = el
+
+        if best_el is not None:
+            logger.info(
+                "  → relative DOM-order resolution: found target %s anchor "
+                "(score=%.4f)",
+                direction.value, best_sc,
+            )
+            return best_el, ResolutionMethod.EMBEDDING, best_sc
+
+        return element, method, score
+
+    # ------------------------------------------------------------------
+    # Relative resolution helpers
+    # ------------------------------------------------------------------
+
+    def _extract_target_label(self, step: CNLStep) -> str:
+        """Extract the clean target label from a CNLStep for text matching."""
+        query = step.element_query or ""
+        if step.element_type_hint and query.lower().endswith(
+            step.element_type_hint.lower()
+        ):
+            query = query[: -len(step.element_type_hint)].rstrip()
+        return query
+
+    @staticmethod
+    def _text_score_candidate(label: str, candidate: dict) -> float:
+        """Score how well a DOM candidate matches the target label.
+
+        Simple text-overlap scoring — mirrors the fast text-match pass
+        in EmbeddingStrategy but is a standalone method for use in
+        relative resolution.
+        """
+        if not label:
+            return 0.0
+
+        label_lower = label.lower().strip()
+        if not label_lower:
+            return 0.0
+
+        # Check visible text
+        text = (candidate.get("text") or "").strip().lower()
+        placeholder = (candidate.get("placeholder") or "").strip().lower()
+        aria = (candidate.get("ariaLabel") or "").strip().lower()
+        name = (candidate.get("name") or "").strip().lower()
+
+        best = 0.0
+        for field in (text, placeholder, aria, name):
+            if not field:
+                continue
+            if field == label_lower:
+                return 1.0
+            if label_lower in field or field in label_lower:
+                ratio = min(len(label_lower), len(field)) / max(len(label_lower), len(field))
+                best = max(best, 0.5 + 0.4 * ratio)
+
+        return best
 
     # ------------------------------------------------------------------
     # Selector extraction from live element

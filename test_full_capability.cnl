@@ -305,5 +305,48 @@ Click "Back to products" Button;
 Assert "Products" Text is visible;
 
 # ════════════════════════════════════════════════════════════════════════════
-# END OF TEST — All SAT capabilities demonstrated
+# SECTION 24: SAT 2.0 — Relative Commands (directional element resolution)
+# ════════════════════════════════════════════════════════════════════════════
+# Syntax: <action> ... <direction> "<anchor_label>" <AnchorType>;
+#   Directions: above, below, following, preceding
+
+# Navigate back to the product list to set up a predictable layout
+Navigate to "https://www.saucedemo.com/inventory.html";
+Assert "Products" Text is visible;
+
+# --- Click relative (below) ---
+# Click the "Add to cart" button that is below a specific product name
+Click "Add to cart" Button below "Sauce Labs Backpack" Text;
+
+# --- Assert relative (below) ---
+# Assert the "Remove" button is now visible below the same product
+Assert "Remove" Button below "Sauce Labs Backpack" Text is visible;
+
+# --- Click relative (above) ---
+# The product title should be above the Remove button
+Assert "Sauce Labs Backpack" Text above "Remove" Button is visible;
+
+# --- Click relative (following) ---
+# Click "Add to cart" following "Sauce Labs Bike Light" product title
+Click "Add to cart" Button following "Sauce Labs Bike Light" Text;
+
+# --- Assert relative (preceding) ---
+# The product name should precede the Remove button in the DOM
+Assert "Sauce Labs Bike Light" Text preceding "Remove" Button is visible;
+
+# --- Type relative (below) ---
+# (Login page example) Type into the Password field below the Username field
+# Navigate to "https://www.saucedemo.com";
+# Type "secret_sauce" in "Password" TextField below "Username" TextField;
+
+# --- Hover relative (below) ---
+# Hover over the price that is below a specific product
+Hover "$29.99" Text below "Sauce Labs Backpack" Text;
+
+# --- Store relative (below) ---
+# Store the text of the price below the backpack product
+Store text of "$29.99" Text below "Sauce Labs Backpack" Text as "backpack_price";
+
+# ════════════════════════════════════════════════════════════════════════════
+# END OF TEST — All SAT capabilities demonstrated (including relative commands)
 # ════════════════════════════════════════════════════════════════════════════

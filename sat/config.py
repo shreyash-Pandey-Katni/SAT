@@ -68,13 +68,24 @@ class VLMStrategyConfig:
 
 
 @dataclass
+class OCRStrategyConfig:
+    min_confidence: float = 0.80
+    min_match_score: float = 0.85
+    languages: list[str] = field(default_factory=lambda: ["en"])
+    gpu: bool = False
+
+
+@dataclass
 class ExecutorConfig:
     timeout_per_step_s: int = 10
-    strategies: list[str] = field(default_factory=lambda: ["selector", "embedding", "vlm"])
+    strategies: list[str] = field(
+        default_factory=lambda: ["selector", "embedding", "ocr", "vlm"]
+    )
     auto_heal: bool = True
     wait_after_action: str = "networkidle"
     selector: SelectorStrategyConfig = field(default_factory=SelectorStrategyConfig)
     embedding: EmbeddingStrategyConfig = field(default_factory=EmbeddingStrategyConfig)
+    ocr: OCRStrategyConfig = field(default_factory=OCRStrategyConfig)
     vlm: VLMStrategyConfig = field(default_factory=VLMStrategyConfig)
 
 
@@ -171,11 +182,12 @@ def _dict_to_config(data: dict[str, Any]) -> SATConfig:
         ),
         executor=ExecutorConfig(
             timeout_per_step_s=e.get("timeout_per_step_s", 10),
-            strategies=e.get("strategies", ["selector", "embedding", "vlm"]),
+            strategies=e.get("strategies", ["selector", "embedding", "ocr", "vlm"]),
             auto_heal=e.get("auto_heal", True),
             wait_after_action=e.get("wait_after_action", "networkidle"),
             selector=SelectorStrategyConfig(**e.get("selector", {})),
             embedding=EmbeddingStrategyConfig(**e.get("embedding", {})),
+            ocr=OCRStrategyConfig(**e.get("ocr", {})),
             vlm=VLMStrategyConfig(**e.get("vlm", {})),
         ),
         web=WebConfig(

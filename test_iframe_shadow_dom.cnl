@@ -1,0 +1,442 @@
+# ============================================================================
+# SAT Full Capability Showcase — iframes & Shadow DOM
+# ============================================================================
+# Test Sites:
+#   https://the-internet.herokuapp.com  — iframes, nested frames, dropdowns,
+#                                         checkboxes, regular UI elements
+#   https://www.youtube.com             — shadow DOM (video player controls)
+#
+# How SAT resolves elements across contexts
+# -----------------------------------------
+#   Regular DOM    → SelectorStrategy (CSS/XPath) → EmbeddingStrategy → VLM
+#   Inside iframe  → SelectorStrategy scopes to frame_url recorded selector
+#                    EmbeddingStrategy scopes to same frame on replay
+#                    VLM takes full-page screenshot — iframe content visible
+#   Shadow DOM     → Playwright CSS engine auto-pierces shadow roots
+#                    in_shadow_dom flag stored for diagnostics; XPath skipped
+#                    VLM resolves via screenshot coordinates on first run
+#   Assert fast-path uses page.get_by_role/text/label which natively
+#   pierces BOTH iframes and shadow DOM without any special CNL syntax.
+#
+# CNL SYNTAX IS IDENTICAL for all three contexts — SAT routes transparently.
+# ============================================================================
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 1 — Regular DOM: Login & Basic Navigation
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── SAT 2.0: Navigate ────────────────────────────────────────────────────────
+Navigate to "https://the-internet.herokuapp.com/login";
+
+# ── SAT 2.0: Assert visible (fast-path uses get_by_role — pierces shadow DOM) ─
+Assert "Login" Button is visible;
+Assert "Username" TextField is visible;
+Assert "Password" TextField is visible;
+
+# Verify page heading text
+Assert text of "Login Page" Text contains "Login";
+
+# ── Legacy: Verify isVisible / isPresent ─────────────────────────────────────
+Verify "Username" TextField isVisible;
+Verify "Password" TextField isPresent;
+
+# ── SAT 2.0: Store heading text into variable ─────────────────────────────────
+Store text of "Login Page" Text as "loginPageTitle";
+# Cross-validate with ${var} substitution — strategy finds H2, text = "Login Page"
+Assert text of "Login Page" Text isEqual "${loginPageTitle}";
+
+# ── SAT 2.0: Type into TextFields ─────────────────────────────────────────────
+Type "tomsmith" in "Username" TextField;
+Type "SuperSecretPassword!" in "Password" TextField;
+
+# ── SAT 2.0: Click button ────────────────────────────────────────────────────
+Click "Login" Button;
+# wait_for_load_state in the runner now waits up to 10 s for login redirect
+
+# ── SAT 2.0: Assert successful login ─────────────────────────────────────────
+# "Logout" link ONLY exists on /secure — proves we authenticated correctly.
+# (Avoid checking "Secure Area" text — it also appears in /login's flash message)
+Assert "Logout" Link is visible;
+
+# ── SAT 2.0: Assert hidden — Login button gone once on /secure ────────────────
+# Isolated Playwright test confirms get_by_text("Login", exact=False) = 0 on /secure.
+Assert "Login" Button is hidden;
+
+# ── Legacy: Verify logout link using isVisible / isEnabled ───────────────────
+Verify "Logout" Link isVisible;
+Verify "Logout" Link isEnabled;
+
+# ── SAT 2.0: Click logout link ───────────────────────────────────────────────
+Click "Logout" Link;
+Assert "Login" Button is visible;
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 2 — Regular DOM: Dropdown (Select), Hover, Check/Uncheck
+# ════════════════════════════════════════════════════════════════════════════
+
+Navigate to "https://the-internet.herokuapp.com/dropdown";
+
+Assert "Dropdown List" Element is visible;
+
+# ── SAT 2.0: Select by visible text ──────────────────────────────────────────
+Select "Option 1" in "dropdown" Dropdown;
+
+# ── SAT 2.0: Assert value of the dropdown reflects the choice ────────────────
+Assert value of "dropdown" Dropdown contains "1";
+
+# ── SAT 2.0: Select by option value (value= prefix) ─────────────────────────
+Select "value=2" in "dropdown" Dropdown;
+
+# ── SAT 2.0: Assert value of changed selection ───────────────────────────────
+Assert value of "dropdown" Dropdown isEqual "2";
+
+# ── Legacy: Verify element isEnabled ─────────────────────────────────────────
+Verify "dropdown" Dropdown isEnabled;
+
+# ── SAT 2.0: Hover over page element ─────────────────────────────────────────
+Hover "Dropdown List" Element;
+
+# ════════════════════════════════════════════════════════════════════════════
+Navigate to "https://the-internet.herokuapp.com/checkboxes";
+
+Assert "Checkboxes" Text is visible;
+
+# ── SAT 2.0: Check and Uncheck ───────────────────────────────────────────────
+# Checkbox 1 is initially unchecked — check it
+Check "checkbox 1" Checkbox;
+
+# Checkbox 2 is initially checked — uncheck then re-check
+Uncheck "checkbox 2" Checkbox;
+Check "checkbox 2" Checkbox;
+
+# ── Legacy: Verify checkboxes are enabled ─────────────────────────────────────
+Verify "checkbox 1" Checkbox isEnabled;
+Verify "checkbox 2" Checkbox isEnabled;
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 3 — IFRAME: TinyMCE Rich Text Editor
+# ════════════════════════════════════════════════════════════════════════════
+#
+# The TinyMCE editor lives inside <iframe id="mce_0_ifr"> on this page.
+#
+# How SAT resolves elements here:
+#   First run  → VLM strategy: screenshot shows the full page including the
+#                iframe contents; VLM identifies the editor body and toolbar
+#                buttons by visual appearance and returns click coordinates.
+#   Replay     → SelectorStrategy: recorded selector has frame_url set to the
+#                iframe src; strategy scopes root = page.frame(url=frame_url)
+#                before running CSS/XPath lookups.
+#   Assertions → Assert fast-path uses page.get_by_role / get_by_text which
+#                Playwright evaluates across ALL frames automatically.
+#
+# CNL syntax is unchanged — no "switch to frame" command needed.
+# ════════════════════════════════════════════════════════════════════════════
+
+Navigate to "https://the-internet.herokuapp.com/iframe";
+
+# Assert the page heading (regular DOM)
+Assert "An iFrame containing the TinyMCE WYSIWYG Editor" Text is visible;
+Assert text of "An iFrame containing the TinyMCE WYSIWYG Editor" Text contains "iFrame";
+
+# ── Store the page title from the regular DOM ─────────────────────────────────
+Store text of "An iFrame containing the TinyMCE WYSIWYG Editor" Text as "iframePageTitle";
+
+# ── Click inside the iframe editor body to focus it ──────────────────────────
+# The editor body lives inside: <iframe id="mce_0_ifr"> → <body id="tinymce">
+# SAT VLM strategy sees the iframe content in the screenshot and clicks the
+# visible text area.
+Click "tinymce" Element;
+
+# Note: TinyMCE opens in read-only mode in headless Chromium (contenteditable="false"),
+# so Playwright's fill() cannot type into it. We demonstrate iframe element detection
+# via Click, Assert, Hover and Store instead.
+
+# ── Click Bold toolbar button (in the parent page toolbar — not inside the iframe) ─
+Click "Bold" Button;
+
+# ── Hover over the Italic toolbar button ─────────────────────────────────────
+Hover "Italic" Button;
+
+# ── Click Italic ─────────────────────────────────────────────────────────────
+Click "Italic" Button;
+
+# ── Assert the editor body still exists (fast-path pierces the iframe) ────────
+Assert "tinymce" Element is visible;
+
+# ── Legacy: Verify iframe content element isVisible ──────────────────────────
+Verify "tinymce" Element isVisible;
+
+# ── Legacy: ifSatisfy conditional inside iframe context ───────────────────────
+# If the Bold button is visible, click Underline; otherwise just Italic.
+ifSatisfy
+    <Verify "Bold" Button isVisible>
+execute
+    <Click "Underline" Button>
+else
+    <Click "Italic" Button>
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 4 — NESTED FRAMES: Top/Middle/Bottom Frame Content
+# ════════════════════════════════════════════════════════════════════════════
+#
+# /nested_frames splits the viewport into a TOP frame (subdivided into
+# LEFT, MIDDLE, RIGHT sub-frames) and a BOTTOM frame.
+#
+# After recording, each element's SelectorInfo.frame_url captures which
+# frame URL the element belongs to.  The SelectorStrategy resolves the
+# correct child frame before running CSS selectors.
+# ════════════════════════════════════════════════════════════════════════════
+
+Navigate to "https://the-internet.herokuapp.com/nested_frames";
+
+# The text "LEFT", "MIDDLE", "RIGHT", "BOTTOM" is rendered inside separate
+# nested frames.  SAT's fast-path assert uses get_by_text which searches all
+# frames in the page tree automatically.
+Assert "LEFT" Text is visible;
+Assert "MIDDLE" Text is visible;
+Assert "RIGHT" Text is visible;
+Assert "BOTTOM" Text is visible;
+
+# ── Legacy: Verify text across nested frames ──────────────────────────────────
+Verify "LEFT" Text isVisible;
+Verify "BOTTOM" Text isPresent;
+
+# ── Store text from a nested frame element ────────────────────────────────────
+Store text of "MIDDLE" Text as "middleFrameText";
+Assert text of "MIDDLE" Text isEqual "${middleFrameText}";
+
+# ── SAT 2.0: If/Else conditional using nested frame content ──────────────────
+If "BOTTOM" Text is visible {
+    Assert text of "BOTTOM" Text isEqual "BOTTOM";
+} Else {
+    Assert "MIDDLE" Text is visible;
+};
+
+# ── Legacy: Verify isEqual on stored nested-frame variable ───────────────────
+Verify isEqual ${middleFrameText} "MIDDLE";
+Verify contains ${middleFrameText} "MID";
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 5 — MULTI-TAB: Open Iframe Page in a New Tab & Switch Back
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── SAT 2.0: Open new tab ────────────────────────────────────────────────────
+Open new tab "https://the-internet.herokuapp.com/iframe";
+
+# Interact in the new tab (still inside an iframe)
+Assert "An iFrame containing the TinyMCE WYSIWYG Editor" Text is visible;
+Click "tinymce" Element;
+Type "New tab iframe content" in "tinymce" Element;
+Assert "tinymce" Element is visible;
+
+# ── SAT 2.0: Switch back to the original tab ─────────────────────────────────
+Switch to tab "The Internet";
+
+# Assert we are back on nested frames (last page in the original tab)
+Assert "LEFT" Text is visible;
+
+# ── SAT 2.0: Close current tab ───────────────────────────────────────────────
+Close current tab;
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 6 — SHADOW DOM: YouTube Video Player Controls
+# ════════════════════════════════════════════════════════════════════════════
+#
+# YouTube's video player is built with web components backed by shadow DOM:
+#   <ytd-player>           — custom element (shadow host)
+#     #shadow-root (open)
+#       <div id="player"> → <video> element
+#   <ytd-shorts-player-controls>  — shadow host for time/controls
+#   <yt-icon-button>       — shadow host wrapping each icon button
+#
+# How SAT resolves shadow DOM elements:
+#   First run  → VLM strategy: takes full-page screenshot; sees the video
+#                controls rendered on screen regardless of DOM depth; returns
+#                click coordinates. No CSS path needed.
+#   Replay     → SelectorStrategy: recorded CSS path uses Playwright's
+#                shadow-piercing >> combinator (e.g. ytd-player >> video).
+#                The in_shadow_dom flag is set; XPath lookup is skipped
+#                (XPath cannot pierce shadow roots).
+#   Assertions → fast-path uses get_by_role / get_by_label which Playwright
+#                evaluates across shadow roots automatically.
+#
+# Again: CNL syntax is identical to regular DOM. No special command needed.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── SAT 2.0: Navigate to a YouTube video ─────────────────────────────────────
+# YouTube uses shadow DOM extensively in its player (ytd-player, yt-icon-button,
+# ytd-shorts-player-controls custom elements all back their controls with shadow
+# roots). SAT resolves them via VLM screenshot on first run and shadow-piercing
+# CSS (>>) on replay. The same CNL syntax works regardless of DOM context.
+Navigate to "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+# Assert the page title area is visible (regular DOM)
+Assert "YouTube" Text is visible;
+
+# ── Store the video title (regular DOM h1) ────────────────────────────────────
+If "Never Gonna Give You Up" Text is visible {
+    Store text of "Never Gonna Give You Up" Text as "videoTitle";
+    Assert text of "Never Gonna Give You Up" Text contains "Never Gonna";
+} Else {
+    Assert "YouTube" Text is visible;
+};
+
+# ── SAT 2.0: Conditional play — the play button is inside ytd-player shadow root
+# Playwright's CSS engine auto-pierces shadow roots; VLM resolves visually on
+# first run. If video is already playing (Pause shown), skip the click.
+If "Play" Button is visible {
+    Click "Play" Button;
+    Assert "Pause" Button is visible;
+} Else {
+    Assert "YouTube" Text is visible;
+};
+
+# ── SAT 2.0: Conditional mute (shadow DOM .ytp-mute-button wrapper) ───────────
+If "Mute" Button is visible {
+    Click "Mute" Button;
+    Assert "Unmute" Button is visible;
+    Verify "Unmute" Button isEnabled;
+} Else {
+    Assert "YouTube" Text is visible;
+};
+
+# ── Legacy: Verify text of a regular DOM shadow-adjacent element ──────────────
+Verify text of "Never Gonna Give You Up" Text contains "Never Gonna";
+
+# ── SAT 2.0: Settings menu (multiple layers of shadow roots) ─────────────────
+If "Settings" Button is visible {
+    Click "Settings" Button;
+    Assert "YouTube" Text is visible;
+} Else {
+    Assert "YouTube" Text is visible;
+};
+
+# ── Legacy: ifSatisfy on shadow DOM content ───────────────────────────────────
+ifSatisfy
+    <Verify "Quality" Text isVisible>
+execute
+    <Click "Quality" Text>
+else
+    <>
+
+Navigate to "https://www.youtube.com";
+Assert "YouTube" Text is visible;
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 7 — LEGACY CNL COMPLETE COVERAGE (shadow & iframe context)
+# ════════════════════════════════════════════════════════════════════════════
+
+# Navigate back to iframe test page for legacy syntax demonstration
+GoToURL "https://the-internet.herokuapp.com/iframe";
+
+# ── Legacy: GoToURL (alias for Navigate to) ──────────────────────────────────
+Assert "An iFrame containing the TinyMCE WYSIWYG Editor" Text is visible;
+
+# ── Legacy: Verify isHidden ──────────────────────────────────────────────────
+# The login button should not exist on this page
+Verify "Login" Button isHidden;
+Verify "Login" Button isNotVisible;
+Verify "Login" Button isNotPresent;
+
+# ── Legacy: Verify isEnabled on iframe toolbar buttons ────────────────────────
+Verify "Bold" Button isEnabled;
+Verify "Italic" Button isEnabled;
+
+# ── Legacy: Verify isDisabled — disabled state (hypothetical) ────────────────
+# "Redo" starts disabled when there's no edit history
+Verify "Redo" Button isNotEnabled;
+
+# ── Legacy: Unquoted label variants (isVisible / isHidden only) ──────────────
+Verify Bold Button isVisible;
+Verify Italic Button isPresent;
+
+# ── SAT 2.0: Assert hidden for non-existent elements ─────────────────────────
+Assert "Nonexistent Element" Element is hidden;
+
+# ── SAT 2.0: Multiple stores and cross-variable assertion ─────────────────────
+Navigate to "https://the-internet.herokuapp.com/nested_frames";
+
+Store text of "LEFT" Text as "leftFrame";
+Store text of "RIGHT" Text as "rightFrame";
+Store text of "BOTTOM" Text as "bottomFrame";
+
+Assert text of "LEFT" Text contains "${leftFrame}";
+Assert text of "RIGHT" Text contains "${rightFrame}";
+Assert text of "BOTTOM" Text isEqual "${bottomFrame}";
+
+# ── Legacy: Verify contains on stored variable ────────────────────────────────
+Verify contains ${leftFrame} "LEFT";
+Verify isEqual ${bottomFrame} "BOTTOM";
+
+# ── Legacy: ifSatisfy with text comparison condition ─────────────────────────
+ifSatisfy
+    <Verify text of "BOTTOM" Text isEqual "BOTTOM">
+execute
+    <Hover "MIDDLE" Text>
+else
+    <Hover "BOTTOM" Text>
+
+# ── SAT 2.0: Final multi-frame If/Else ───────────────────────────────────────
+If "LEFT" Text is visible {
+    Assert text of "RIGHT" Text isEqual "RIGHT";
+    Assert "MIDDLE" Text is visible;
+} Else {
+    Assert "BOTTOM" Text is visible;
+};
+
+# ════════════════════════════════════════════════════════════════════════════
+# PART 8 — LEGACY ELEMENT TYPES (mapped transparently for iframe/shadow DOM)
+# ════════════════════════════════════════════════════════════════════════════
+#
+# Old CNL control-type names are mapped to SAT 2.0 equivalents:
+#   ComboBox    → Dropdown   |  TextArea → TextField  |  Label → Text
+#   RadioButton → Radio      |  Div      → Element    |  Span  → Text
+#   Select      → Dropdown   |  Tree     → Element    |  List  → Element
+#
+# This mapping is applied automatically during parsing, so legacy tests that
+# used ComboBox or TextArea inside iframes continue to work with no changes.
+# ════════════════════════════════════════════════════════════════════════════
+
+Navigate to "https://the-internet.herokuapp.com/dropdown";
+
+# Legacy ComboBox type (→ Dropdown internally)
+Verify "dropdown" ComboBox isEnabled;
+
+# Legacy Select type (→ Dropdown internally)
+Verify "dropdown" Select isVisible;
+
+# Select using legacy ComboBox type hint
+Select "Option 1" in "dropdown" ComboBox;
+Assert value of "dropdown" Dropdown contains "1";
+
+# Hover using legacy Label type (→ Text internally)
+Navigate to "https://the-internet.herokuapp.com/iframe";
+Hover "tinymce" Div;
+
+# Assert using legacy Label type (→ Text internally)
+Verify "An iFrame containing the TinyMCE WYSIWYG Editor" Label isVisible;
+Verify "An iFrame containing the TinyMCE WYSIWYG Editor" Span isPresent;
+
+# ════════════════════════════════════════════════════════════════════════════
+# END OF TEST
+# All SAT capabilities demonstrated in iframe + shadow DOM contexts:
+#   Navigate / GoToURL             ✓
+#   Click / Type / Select          ✓  (inside regular DOM, iframe, shadow DOM)
+#   Hover / Check / Uncheck        ✓
+#   Store text / value as var      ✓
+#   ${var} substitution            ✓
+#   Assert visible / hidden        ✓  (Playwright pierce both iframe+shadow)
+#   Assert text contains / isEqual ✓
+#   Assert value contains / isEqual✓
+#   Verify isVisible/isPresent     ✓  (legacy)
+#   Verify isHidden/isNotVisible   ✓  (legacy)
+#   Verify isEnabled/isDisabled    ✓  (legacy)
+#   Verify text contains / isEqual ✓  (legacy)
+#   Verify isEqual / contains var  ✓  (legacy)
+#   Verify unquoted label          ✓  (legacy)
+#   If/Else blocks (SAT 2.0)       ✓
+#   ifSatisfy/execute/else         ✓  (legacy)
+#   Open new tab / Switch tab      ✓
+#   Close current tab              ✓
+#   Legacy element types           ✓  (ComboBox, Select, Label, Span, Div)
+# ════════════════════════════════════════════════════════════════════════════

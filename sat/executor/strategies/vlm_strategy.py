@@ -1,4 +1,4 @@
-"""Strategy 3 — VLM-based visual element detection via Ollama.
+"""Strategy 4 — VLM-based visual element detection via Ollama.
 
 Takes a screenshot of the current page, sends it to a local LLaVA-style model,
 parses the returned coordinates, and resolves an ElementHandle via

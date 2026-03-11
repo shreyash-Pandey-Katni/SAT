@@ -1,6 +1,6 @@
 """Executor — main orchestrator for intelligent test replay.
 
-Strategy chain: Selector → Embedding → VLM → Fail
+Strategy chain: Selector → Embedding → OCR → VLM → Fail
 Auto-heal: updates test file when fallback strategies succeed.
 Event-driven: Playwright auto-wait, no polling.
 """
@@ -29,6 +29,7 @@ from sat.executor.action_performer import ActionPerformer
 from sat.executor.auto_healer import AutoHealer
 from sat.executor.report import ReportGenerator
 from sat.executor.strategies.embedding_strategy import EmbeddingStrategy
+from sat.executor.strategies.ocr_strategy import OCRStrategy
 from sat.executor.strategies.selector_strategy import SelectorStrategy
 from sat.executor.strategies.vlm_strategy import VLMStrategy
 from sat.executor.strategy_chain import StrategyChain
@@ -52,6 +53,7 @@ class Executor:
         strategies_map = {
             "selector": lambda: SelectorStrategy(timeout_ms=ec.selector.timeout_ms),
             "embedding": lambda: EmbeddingStrategy(config=ec.embedding),
+            "ocr": lambda: OCRStrategy(config=ec.ocr),
             "vlm": lambda: VLMStrategy(config=ec.vlm),
         }
         self._strategy_chain = StrategyChain([

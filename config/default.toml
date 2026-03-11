@@ -18,7 +18,7 @@ navigation_causation_window_ms = 2000   # nav within this window after click/typ
 
 [executor]
 timeout_per_step_s = 10
-strategies = ["selector", "embedding", "vlm"]
+strategies = ["selector", "embedding", "ocr", "vlm"]
 auto_heal = true
 wait_after_action = "domcontentloaded"  # "domcontentloaded" | "load" | "networkidle" | "none"
 
@@ -31,6 +31,12 @@ min_cosine_similarity = 0.85
 max_candidates = 50
 concurrency = 8                         # parallel Ollama embedding requests
 ollama_base_url = "http://localhost:11434"
+
+[executor.ocr]
+min_confidence = 0.80
+min_match_score = 0.85
+languages = ["en"]
+gpu = false
 
 [executor.vlm]
 model = "llava:7b"

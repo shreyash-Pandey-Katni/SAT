@@ -32,6 +32,10 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
 ]
+ocr = [
+    "easyocr>=1.7",
+    "rapidfuzz>=3.0",
+]
 
 [project.scripts]
 sat = "sat.cli:app"

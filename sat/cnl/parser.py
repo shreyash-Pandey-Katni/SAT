@@ -48,6 +48,7 @@ from sat.cnl.models import (
     CNLStep,
     ConditionType,
     ParsedCNL,
+    RelativeDirection,
 )
 from sat.cnl.variables import substitute as _substitute_vars
 from sat.core.models import ActionType
@@ -81,6 +82,17 @@ _KNOWN_ELEMENT_TYPES = {
     "radio", "tab", "menu", "element", "image", "icon", "text",
 }
 
+# ── Relative-direction clause (optional suffix for element-targeting patterns)
+# Captures: (direction, anchor_label, anchor_type)
+_REL = r'(?:\s+(following|preceding|below|above)\s+"([^"]*)"\s+(\w+))?'
+
+_DIRECTION_MAP: dict[str, RelativeDirection] = {
+    "following":  RelativeDirection.FOLLOWING,
+    "preceding":  RelativeDirection.PRECEDING,
+    "below":      RelativeDirection.BELOW,
+    "above":      RelativeDirection.ABOVE,
+}
+
 # ── Regex patterns for each statement type ──────────────────────────────────
 
 PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
@@ -88,21 +100,21 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "click",
         ActionType.CLICK,
         re.compile(
-            rf'^\s*Click\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Click\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     (
         "type",
         ActionType.TYPE,
         re.compile(
-            rf'^\s*Type\s+{_Q}\s+in\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Type\s+{_Q}\s+in\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     (
         "select",
         ActionType.SELECT,
         re.compile(
-            rf'^\s*Select\s+{_Q}\s+in\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Select\s+{_Q}\s+in\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     (
@@ -144,14 +156,14 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "hover",
         ActionType.HOVER,
         re.compile(
-            rf'^\s*Hover\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Hover\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     (
         "store",
         ActionType.STORE,
         re.compile(
-            rf'^\s*Store\s+(\w+)\s+of\s+{_Q}(?:\s+(\w+))?\s+as\s+{_Q}\s*;\s*$',
+            rf'^\s*Store\s+(\w+)\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+as\s+{_Q}\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -160,14 +172,14 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "check",
         ActionType.CHECK,
         re.compile(
-            rf'^\s*Check\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Check\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     (
         "uncheck",
         ActionType.UNCHECK,
         re.compile(
-            rf'^\s*Uncheck\s+{_Q}(?:\s+(\w+))?\s*;\s*$', re.IGNORECASE
+            rf'^\s*Uncheck\s+{_Q}(?:\s+(\w+))?{_REL}\s*;\s*$', re.IGNORECASE
         ),
     ),
     # ── SAT 2.0 Assert patterns ─────────────────────────────────────────
@@ -175,7 +187,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_visible",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?\s+is\s+visible\s*;\s*$',
+            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?{_REL}\s+is\s+visible\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -183,7 +195,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_hidden",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?\s+is\s+hidden\s*;\s*$',
+            rf'^\s*Assert\s+{_Q}(?:\s+(\w+))?{_REL}\s+is\s+hidden\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -191,7 +203,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_text_contains",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+contains\s+{_Q}\s*;\s*$',
+            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+contains\s+{_Q}\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -199,7 +211,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_text_equal",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+isEqual\s+{_Q}\s*;\s*$',
+            rf'^\s*Assert\s+text\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+isEqual\s+{_Q}\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -207,7 +219,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_value_contains",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?\s+contains\s+{_Q}\s*;\s*$',
+            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+contains\s+{_Q}\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -215,7 +227,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "assert_value_equal",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?\s+isEqual\s+{_Q}\s*;\s*$',
+            rf'^\s*Assert\s+value\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+isEqual\s+{_Q}\s*;\s*$',
             re.IGNORECASE
         ),
     ),
@@ -225,7 +237,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_visible",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?\s+(?:isVisible|isPresent)\s*;\s*$',
+            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?{_REL}\s+(?:isVisible|isPresent)\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -234,7 +246,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_hidden",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?\s+(?:isHidden|isNotVisible|isNotPresent)\s*;\s*$',
+            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?{_REL}\s+(?:isHidden|isNotVisible|isNotPresent)\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -243,7 +255,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_enabled",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?\s+isEnabled\s*;\s*$',
+            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?{_REL}\s+isEnabled\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -252,7 +264,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_disabled",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?\s+(?:isNotEnabled|isDisabled)\s*;\s*$',
+            rf'^\s*Verify\s+{_Q}(?:\s+(\w+))?{_REL}\s+(?:isNotEnabled|isDisabled)\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -261,7 +273,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_text_contains",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+contains\s+{_Q}\s*;\s*$',
+            rf'^\s*Verify\s+text\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+contains\s+{_Q}\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -270,7 +282,7 @@ PATTERNS: list[tuple[str, ActionType, re.Pattern]] = [
         "verify_text_equal",
         ActionType.ASSERT,
         re.compile(
-            rf'^\s*Verify\s+text\s+of\s+{_Q}(?:\s+(\w+))?\s+isEqual\s+{_Q}\s*;\s*$',
+            rf'^\s*Verify\s+text\s+of\s+{_Q}(?:\s+(\w+))?{_REL}\s+isEqual\s+{_Q}\s*;\s*$',
             re.IGNORECASE,
         ),
     ),
@@ -786,8 +798,21 @@ def _build_step(
     step_num: int,
     groups: tuple,
 ) -> CNLStep:
+
+    def _rel(direction_raw: str | None, anchor_label: str | None,
+             anchor_type: str | None) -> dict:
+        """Build relative-direction kwargs (empty dict if no relative clause)."""
+        if not direction_raw:
+            return {}
+        return {
+            "relative_direction": _DIRECTION_MAP[direction_raw.lower()],
+            "anchor_query": _build_query(anchor_label or "", anchor_type),
+            "anchor_type_hint": _normalise_type(anchor_type),
+        }
+
     match kind:
         case "click":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -796,8 +821,10 @@ def _build_step(
                 element_query=_build_query(label, el_type),
                 value=None,
                 element_type_hint=_normalise_type(el_type),
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "type":
+            # groups: (value, label, el_type, direction, anchor_label, anchor_type)
             value, label, el_type = groups[0], groups[1], groups[2]
             return CNLStep(
                 step_number=step_num,
@@ -806,8 +833,10 @@ def _build_step(
                 element_query=_build_query(label, el_type),
                 value=value,
                 element_type_hint=_normalise_type(el_type),
+                **_rel(groups[3], groups[4], groups[5]),
             )
         case "select":
+            # groups: (value, label, el_type, direction, anchor_label, anchor_type)
             value, label, el_type = groups[0], groups[1], groups[2]
             # Parse select mode: "index=N" | "value=X" | plain text
             select_mode = "text"
@@ -825,6 +854,7 @@ def _build_step(
                 value=value,
                 element_type_hint="Dropdown",
                 select_mode=select_mode,
+                **_rel(groups[3], groups[4], groups[5]),
             )
         case "navigate" | "go_to_url":
             url = groups[0]
@@ -861,6 +891,7 @@ def _build_step(
                 element_query="",
             )
         case "hover":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -869,9 +900,12 @@ def _build_step(
                 element_query=_build_query(label, el_type),
                 value=None,
                 element_type_hint=_normalise_type(el_type),
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "store":
-            attribute, label, el_type, var_name = groups
+            # groups: (attr, label, el_type, direction, anchor_label, anchor_type, var_name)
+            attribute, label, el_type = groups[0], groups[1], groups[2]
+            var_name = groups[6]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -881,9 +915,11 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 variable_name=var_name,
                 store_attribute=attribute.lower(),
+                **_rel(groups[3], groups[4], groups[5]),
             )
         # ── Check / Uncheck ──────────────────────────────────────────
         case "check" | "uncheck":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -892,9 +928,11 @@ def _build_step(
                 element_query=_build_query(label, el_type),
                 value=None,
                 element_type_hint=_normalise_type(el_type) or "Checkbox",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         # ── SAT 2.0 Assert patterns ─────────────────────────────────
         case "assert_visible":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -904,8 +942,10 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_VISIBLE,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "assert_hidden":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -915,9 +955,12 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_HIDDEN,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "assert_text_contains":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -927,9 +970,12 @@ def _build_step(
                 assertion_type=ConditionType.CONTAINS_TEXT,
                 assertion_expected=expected,
                 store_attribute="text",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "assert_text_equal":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -939,9 +985,12 @@ def _build_step(
                 assertion_type=ConditionType.IS_EQUAL,
                 assertion_expected=expected,
                 store_attribute="text",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "assert_value_contains":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -951,9 +1000,12 @@ def _build_step(
                 assertion_type=ConditionType.CONTAINS_TEXT,
                 assertion_expected=expected,
                 store_attribute="value",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "assert_value_equal":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -963,9 +1015,11 @@ def _build_step(
                 assertion_type=ConditionType.IS_EQUAL,
                 assertion_expected=expected,
                 store_attribute="value",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         # ── Old CNL Verify patterns (→ ASSERT) ──────────────────────
         case "verify_visible":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -975,8 +1029,10 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_VISIBLE,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_hidden":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -986,8 +1042,10 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_HIDDEN,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_enabled":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -997,8 +1055,10 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_ENABLED,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_disabled":
+            # groups: (label, el_type, direction, anchor_label, anchor_type)
             label, el_type = groups[0], groups[1]
             return CNLStep(
                 step_number=step_num,
@@ -1008,9 +1068,12 @@ def _build_step(
                 element_type_hint=_normalise_type(el_type),
                 assertion_type=ConditionType.IS_DISABLED,
                 assertion_expected=None,
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_text_contains":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -1020,9 +1083,12 @@ def _build_step(
                 assertion_type=ConditionType.CONTAINS_TEXT,
                 assertion_expected=expected,
                 store_attribute="text",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_text_equal":
-            label, el_type, expected = groups[0], groups[1], groups[2]
+            # groups: (label, el_type, direction, anchor_label, anchor_type, expected)
+            label, el_type = groups[0], groups[1]
+            expected = groups[5]
             return CNLStep(
                 step_number=step_num,
                 raw_cnl=raw_cnl,
@@ -1032,6 +1098,7 @@ def _build_step(
                 assertion_type=ConditionType.IS_EQUAL,
                 assertion_expected=expected,
                 store_attribute="text",
+                **_rel(groups[2], groups[3], groups[4]),
             )
         case "verify_isequal_value":
             subject, expected = groups[0], groups[1]

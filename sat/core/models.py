@@ -43,6 +43,7 @@ class StepResult(str, Enum):
 class ResolutionMethod(str, Enum):
     SELECTOR = "selector"
     EMBEDDING = "embedding"
+    OCR = "ocr"
     VLM = "vlm"
     NONE = "none"
 
@@ -87,7 +88,7 @@ class SelectorInfo(BaseModel):
 
 class HealRecord(BaseModel):
     healed_at: datetime = Field(default_factory=_utc_now)
-    healed_by: str                           # "embedding" | "vlm"
+    healed_by: str                           # "embedding" | "ocr" | "vlm"
     similarity_score: float | None = None
     previous_selector: SelectorInfo
     new_selector: SelectorInfo
